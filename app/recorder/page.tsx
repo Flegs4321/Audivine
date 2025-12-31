@@ -30,6 +30,8 @@ function RecorderPageContent() {
   const [uploadedUrl, setUploadedUrl] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [audioDuration, setAudioDuration] = useState<number | null>(null);
+  const [audioInputDevices, setAudioInputDevices] = useState<MediaDeviceInfo[]>([]);
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string | undefined>(undefined);
 
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const startTimeRef = useRef<number | null>(null);
@@ -99,6 +101,42 @@ function RecorderPageContent() {
     return Date.now() - startTimeRef.current;
   };
 
+  // Enumerate available audio input devices
+  const enumerateAudioDevices = async () => {
+    try {
+      // Check if mediaDevices API is available
+      if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+        console.warn("Device enumeration not supported");
+        return;
+      }
+
+      // First request permission to access devices (required for device labels)
+      try {
+        await navigator.mediaDevices.getUserMedia({ audio: true });
+      } catch (err) {
+        // Permission might be denied, but we can still try to enumerate
+        console.warn("Permission denied for getUserMedia, but continuing enumeration");
+      }
+
+      // Enumerate all devices
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const audioInputs = devices.filter(device => device.kind === 'audioinput');
+      setAudioInputDevices(audioInputs);
+
+      // Set the first device as default if none selected
+      if (audioInputs.length > 0 && !selectedDeviceId) {
+        setSelectedDeviceId(audioInputs[0].deviceId);
+      }
+    } catch (err) {
+      console.error('Error enumerating audio devices:', err);
+    }
+  };
+
+  // Enumerate audio devices on mount
+  useEffect(() => {
+    enumerateAudioDevices();
+  }, []);
+
   const handleStartRecording = async () => {
     try {
       setError(null);
@@ -119,10 +157,13 @@ function RecorderPageContent() {
         );
       }
 
-      // Request microphone permission and get media stream
+      // Request microphone permission and get media stream with selected device
       let stream: MediaStream;
       try {
-        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const audioConstraints: boolean | MediaTrackConstraints = selectedDeviceId
+          ? { deviceId: { exact: selectedDeviceId } }
+          : true;
+        stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
       } catch (err) {
         if (err instanceof Error) {
           if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
@@ -140,26 +181,27 @@ function RecorderPageContent() {
 
       mediaStreamRef.current = stream;
 
-      // Determine the best MIME type supported by the browser
-      let selectedMimeType = "audio/webm";
-      const supportedTypes = [
-        "audio/webm",
-        "audio/webm;codecs=opus",
-        "audio/ogg;codecs=opus",
-        "audio/mp4",
-        "audio/mpeg",
+      // Use standard MediaRecorder (records in WebM format)
+      // WebM is well-supported and works reliably across browsers
+      // Note: For MP3, you can convert the recording after download using tools like FFmpeg
+      const mimeTypes = [
+        'audio/webm;codecs=opus',
+        'audio/webm',
+        'audio/ogg;codecs=opus',
+        'audio/mp4',
       ];
-
-      for (const type of supportedTypes) {
-        if (MediaRecorder.isTypeSupported(type)) {
-          selectedMimeType = type;
+      
+      let selectedMimeType = 'audio/webm';
+      for (const mimeType of mimeTypes) {
+        if (MediaRecorder.isTypeSupported(mimeType)) {
+          selectedMimeType = mimeType;
           break;
         }
       }
-
+      
       setMimeType(selectedMimeType);
 
-      // Create MediaRecorder
+      // Create standard MediaRecorder
       const mediaRecorder = new MediaRecorder(stream, {
         mimeType: selectedMimeType,
       });
@@ -225,7 +267,7 @@ function RecorderPageContent() {
       // #region agent log
       fetch('http://127.0.0.1:7242/ingest/321257dd-001e-4325-9924-8b2713a810bc',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'recorder/page.tsx:199',message:'starting MediaRecorder',data:{mimeType:selectedMimeType,state:mediaRecorder.state},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'F'})}).catch(()=>{});
       // #endregion
-      mediaRecorder.start(1000); // Collect data every second
+      mediaRecorder.start(); // Mp3MediaRecorder doesn't support timeslice - dataavailable fires only when stopped
       // #region agent log
       fetch('http://127.0.0.1:7242/ingest/321257dd-001e-4325-9924-8b2713a810bc',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'recorder/page.tsx:201',message:'MediaRecorder started',data:{state:mediaRecorder.state},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'F'})}).catch(()=>{});
       // #endregion
@@ -300,22 +342,8 @@ function RecorderPageContent() {
         const recorder = mediaRecorderRef.current;
         const chunksBeforeStop = audioChunksRef.current.length;
         
-        // Request final data chunk before stopping
-        try {
-          recorder.requestData();
-          // #region agent log
-          fetch('http://127.0.0.1:7242/ingest/321257dd-001e-4325-9924-8b2713a810bc',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'recorder/page.tsx:267',message:'requestData called',data:{chunksBefore:chunksBeforeStop},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-          // #endregion
-          
-          // Wait a bit longer to ensure the final chunk is collected
-          await new Promise(resolve => setTimeout(resolve, 200));
-        } catch (err) {
-          // #region agent log
-          fetch('http://127.0.0.1:7242/ingest/321257dd-001e-4325-9924-8b2713a810bc',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'recorder/page.tsx:270',message:'requestData failed',data:{error:err instanceof Error?err.message:'unknown'},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-          // #endregion
-        }
-        
         // Stop the recorder
+        // Note: Mp3MediaRecorder doesn't support requestData() - dataavailable fires automatically on stop
         recorder.stop();
         // #region agent log
         fetch('http://127.0.0.1:7242/ingest/321257dd-001e-4325-9924-8b2713a810bc',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'recorder/page.tsx:275',message:'stop() called',data:{finalChunksCount:audioChunksRef.current.length,chunksBefore:chunksBeforeStop},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
@@ -434,6 +462,30 @@ function RecorderPageContent() {
             {/* Recording Controls */}
             <div className="bg-white rounded-xl shadow-lg p-8">
               <div className="flex flex-col items-center space-y-6">
+                {/* Audio Device Selection */}
+                {state === "idle" && audioInputDevices.length > 0 && (
+                  <div className="w-full max-w-md">
+                    <label htmlFor="audio-device" className="block text-sm font-medium text-gray-700 mb-2">
+                      Audio Input Device:
+                    </label>
+                    <select
+                      id="audio-device"
+                      value={selectedDeviceId || ""}
+                      onChange={(e) => setSelectedDeviceId(e.target.value)}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 focus:ring-2 focus:ring-red-500 focus:border-red-500"
+                    >
+                      {audioInputDevices.map((device, index) => (
+                        <option key={device.deviceId} value={device.deviceId}>
+                          {device.label || `Microphone ${index + 1}`}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="mt-1 text-xs text-gray-500">
+                      Select the audio input device you want to record from (e.g., soundboard via aux cable)
+                    </p>
+                  </div>
+                )}
+
                 {/* Start/End Recording Button */}
                 {state === "idle" || state === "stopped" ? (
                   <button
@@ -560,7 +612,7 @@ function RecorderPageContent() {
                     </div>
                     <a
                       href={audioUrl}
-                      download={`recording-${new Date().toISOString().slice(0, 19).replace(/:/g, "-")}.${mimeType.includes("webm") ? "webm" : mimeType.includes("ogg") ? "ogg" : "mp4"}`}
+                      download={`recording-${new Date().toISOString().slice(0, 19).replace(/:/g, "-")}.mp3`}
                       className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium"
                     >
                       Download Recording

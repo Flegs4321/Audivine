@@ -46,7 +46,9 @@ export async function uploadRecording(
 
     // Generate unique filename with timestamp
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const extension = metadata.mimeType.includes("webm")
+    const extension = metadata.mimeType.includes("mpeg") || metadata.mimeType.includes("mp3")
+      ? "mp3"
+      : metadata.mimeType.includes("webm")
       ? "webm"
       : metadata.mimeType.includes("ogg")
       ? "ogg"
@@ -92,9 +94,10 @@ export async function uploadRecording(
       .single();
 
     if (dbError) {
-      console.error("Database insert error:", dbError);
-      // Still return success for storage upload, but log the DB error
-      // You might want to handle this differently based on your needs
+      console.warn("Database insert error (storage upload succeeded):", dbError.message);
+      // Storage upload succeeded, but database insert failed
+      // This is non-fatal - the file is still uploaded and accessible
+      // Common causes: RLS policies not configured, or migration not run
     }
 
     return {
