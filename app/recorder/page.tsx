@@ -1,11 +1,14 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
+import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { TranscriptionProviderComponent, useTranscription } from "./context/TranscriptionProvider";
 import type { TranscriptChunk } from "./types/transcription";
 import { uploadRecording } from "@/lib/supabase/storage";
+import { useAuth } from "../auth/context/AuthProvider";
 
-type RecordingState = "idle" | "recording" | "stopped";
+type RecordingState = "idle" | "recording" | "paused" | "stopped";
 type SegmentType = "Announcements" | "Sharing" | "Sermon";
 
 interface Segment {
@@ -15,7 +18,9 @@ interface Segment {
 }
 
 function RecorderPageContent() {
+  const router = useRouter();
   const transcription = useTranscription();
+  const { user, signOut } = useAuth();
   const [state, setState] = useState<RecordingState>("idle");
   const [activeSegment, setActiveSegment] = useState<SegmentType | null>(null);
   const [activeSegmentStartMs, setActiveSegmentStartMs] = useState<number | null>(null);
@@ -35,6 +40,8 @@ function RecorderPageContent() {
 
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const startTimeRef = useRef<number | null>(null);
+  const pausedTimeRef = useRef<number>(0); // Total paused time in milliseconds
+  const pauseStartTimeRef = useRef<number | null>(null); // When pause started
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -48,7 +55,8 @@ function RecorderPageContent() {
     if (state === "recording" && startTimeRef.current !== null) {
       intervalRef.current = setInterval(() => {
         const now = Date.now();
-        const elapsed = Math.floor((now - startTimeRef.current!) / 1000);
+        const totalElapsed = now - startTimeRef.current! - pausedTimeRef.current;
+        const elapsed = Math.floor(totalElapsed / 1000);
         setElapsedTime(elapsed);
         elapsedTimeRef.current = elapsed;
       }, 100); // Update every 100ms for smooth display
@@ -98,7 +106,10 @@ function RecorderPageContent() {
 
   const getCurrentElapsedMs = (): number => {
     if (startTimeRef.current === null) return 0;
-    return Date.now() - startTimeRef.current;
+    const now = state === "paused" && pauseStartTimeRef.current !== null
+      ? pauseStartTimeRef.current
+      : Date.now();
+    return now - startTimeRef.current - pausedTimeRef.current;
   };
 
   // Enumerate available audio input devices
@@ -365,6 +376,68 @@ function RecorderPageContent() {
     }
   };
 
+  const handlePauseRecording = () => {
+    try {
+      // Pause MediaRecorder if supported
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
+        // Check if pause is supported
+        if (typeof mediaRecorderRef.current.pause === "function") {
+          mediaRecorderRef.current.pause();
+        } else {
+          console.warn("MediaRecorder pause is not supported in this browser");
+        }
+      }
+
+      // Stop transcription (will restart on resume)
+      if (transcription.isActive) {
+        transcription.stop();
+      }
+
+      // Record pause start time
+      pauseStartTimeRef.current = Date.now();
+      setState("paused");
+    } catch (err) {
+      console.error("Error pausing recording:", err);
+      setError(err instanceof Error ? err.message : "Failed to pause recording");
+    }
+  };
+
+  const handleResumeRecording = async () => {
+    try {
+      // Calculate paused duration and add to total
+      if (pauseStartTimeRef.current !== null) {
+        const pausedDuration = Date.now() - pauseStartTimeRef.current;
+        pausedTimeRef.current += pausedDuration;
+        pauseStartTimeRef.current = null;
+      }
+
+      // Resume MediaRecorder if supported
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state === "paused") {
+        // Check if resume is supported
+        if (typeof mediaRecorderRef.current.resume === "function") {
+          mediaRecorderRef.current.resume();
+        } else {
+          console.warn("MediaRecorder resume is not supported in this browser");
+        }
+      }
+
+      // Restart transcription if available
+      if (transcription.isAvailable && !transcription.isActive) {
+        try {
+          await transcription.start();
+        } catch (err) {
+          console.error("Failed to restart transcription:", err);
+          // Continue recording even if transcription fails
+        }
+      }
+
+      setState("recording");
+    } catch (err) {
+      console.error("Error resuming recording:", err);
+      setError(err instanceof Error ? err.message : "Failed to resume recording");
+    }
+  };
+
   const handleSegmentClick = (segment: SegmentType) => {
     const currentMs = getCurrentElapsedMs();
 
@@ -405,6 +478,53 @@ function RecorderPageContent() {
       });
     });
   }, [transcription.isAvailable, transcription.onTextChunk]);
+
+  // Handle automatic section analysis
+  const handleAnalyzeSections = async () => {
+    if (!audioBlob || transcriptChunksRef.current.length === 0) {
+      setError("No recording or transcript available for analysis");
+      return;
+    }
+
+    try {
+      setUploadStatus("uploading");
+      setUploadError(null);
+
+      const response = await fetch("/api/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chunks: transcriptChunksRef.current,
+          totalDurationMs: elapsedTimeRef.current * 1000,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || `Analysis failed: ${response.statusText}`);
+      }
+
+      const result = await response.json();
+
+      // Generate a recording ID (you can replace this with actual recording ID from upload)
+      const recordingId = uploadedUrl 
+        ? uploadedUrl.split("/").pop()?.split(".")[0] || `recording-${Date.now()}`
+        : `recording-${Date.now()}`;
+
+      // Store sections temporarily (replace with database save later)
+      localStorage.setItem(
+        `recording-sections-${recordingId}`,
+        JSON.stringify(result.sections)
+      );
+
+      // Navigate to review page
+      router.push(`/recorder/review?id=${recordingId}`);
+    } catch (err) {
+      console.error("Analysis error:", err);
+      setUploadError(err instanceof Error ? err.message : "Failed to analyze sections");
+      setUploadStatus("error");
+    }
+  };
 
   // Handle upload to Supabase
   const handleUploadToSupabase = async (blob: Blob, mimeType: string) => {
@@ -452,9 +572,45 @@ function RecorderPageContent() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 p-6">
-      <div className="max-w-6xl mx-auto">
-        <h1 className="text-3xl font-bold text-gray-900 mb-8">Recording Studio</h1>
+    <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
+      {/* Header */}
+      <header className="bg-white border-b border-gray-200 shadow-sm sticky top-0 z-50">
+        <div className="max-w-7xl mx-auto py-4 flex items-center justify-between gap-4 px-6">
+          <div className="flex items-center gap-4">
+            <Link
+              href="/"
+              className="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors"
+            >
+              Home
+            </Link>
+            <h1 className="text-3xl font-bold text-gray-900">Audivine</h1>
+          </div>
+          <div className="flex items-center gap-4">
+            {user ? (
+              <>
+                <span className="text-sm text-gray-600">{user.email}</span>
+                <button
+                  onClick={signOut}
+                  className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
+                >
+                  Logout
+                </button>
+              </>
+            ) : (
+              <Link
+                href="/login"
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+              >
+                Login
+              </Link>
+            )}
+          </div>
+        </div>
+      </header>
+
+      <div className="p-6">
+        <div className="max-w-6xl mx-auto">
+          <h2 className="text-2xl font-bold text-gray-900 mb-8">Recording Studio</h2>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* Main Control Panel */}
@@ -463,7 +619,7 @@ function RecorderPageContent() {
             <div className="bg-white rounded-xl shadow-lg p-8">
               <div className="flex flex-col items-center space-y-6">
                 {/* Audio Device Selection */}
-                {state === "idle" && audioInputDevices.length > 0 && (
+                {(state === "idle" || state === "stopped") && audioInputDevices.length > 0 && (
                   <div className="w-full max-w-md">
                     <label htmlFor="audio-device" className="block text-sm font-medium text-gray-700 mb-2">
                       Audio Input Device:
@@ -495,38 +651,66 @@ function RecorderPageContent() {
                     Start Recording
                   </button>
                 ) : (
-                  <button
-                    onClick={handleEndRecording}
-                    className="px-12 py-6 bg-gray-800 text-white text-xl font-semibold rounded-full hover:bg-gray-900 transition-all transform hover:scale-105 shadow-lg"
-                  >
-                    End Recording
-                  </button>
+                  <div className="flex gap-4">
+                    {state === "paused" ? (
+                      <button
+                        onClick={handleResumeRecording}
+                        className="px-8 py-6 bg-green-600 text-white text-xl font-semibold rounded-full hover:bg-green-700 transition-all transform hover:scale-105 shadow-lg"
+                      >
+                        Resume
+                      </button>
+                    ) : (
+                      <button
+                        onClick={handlePauseRecording}
+                        className="px-8 py-6 bg-yellow-600 text-white text-xl font-semibold rounded-full hover:bg-yellow-700 transition-all transform hover:scale-105 shadow-lg"
+                      >
+                        Pause
+                      </button>
+                    )}
+                    <button
+                      onClick={handleEndRecording}
+                      className="px-8 py-6 bg-gray-800 text-white text-xl font-semibold rounded-full hover:bg-gray-900 transition-all transform hover:scale-105 shadow-lg"
+                    >
+                      End Recording
+                    </button>
+                  </div>
                 )}
 
                 {/* Timer Display */}
-                {state === "recording" && (
+                {(state === "recording" || state === "paused") && (
                   <div className="text-center">
                     <div className="text-6xl font-mono font-bold text-gray-900 mb-2">
                       {formatTime(elapsedTime)}
                     </div>
                     <div className="flex items-center justify-center space-x-2">
-                      <span className="w-3 h-3 bg-red-600 rounded-full animate-pulse"></span>
-                      <span className="text-sm text-gray-600 uppercase tracking-wide">
-                        Recording
-                      </span>
+                      {state === "recording" ? (
+                        <>
+                          <span className="w-3 h-3 bg-red-600 rounded-full animate-pulse"></span>
+                          <span className="text-sm text-gray-600 uppercase tracking-wide">
+                            Recording
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="w-3 h-3 bg-yellow-600 rounded-full"></span>
+                          <span className="text-sm text-gray-600 uppercase tracking-wide">
+                            Paused
+                          </span>
+                        </>
+                      )}
                     </div>
                   </div>
                 )}
 
                 {/* Active Segment Label */}
-                {state === "recording" && activeSegment && (
+                {(state === "recording" || state === "paused") && activeSegment && (
                   <div className="bg-blue-100 text-blue-800 px-6 py-3 rounded-lg font-semibold">
                     Active: {activeSegment}
                   </div>
                 )}
 
                 {/* Segment Buttons */}
-                {state === "recording" && (
+                {(state === "recording" || state === "paused") && (
                   <div className="flex flex-wrap gap-4 justify-center w-full">
                     {(["Announcements", "Sharing", "Sermon"] as const).map((segment) => (
                       <button
@@ -655,6 +839,22 @@ function RecorderPageContent() {
                     )}
                   </div>
                 </div>
+
+                {/* Analyze Sections Button */}
+                {state === "stopped" && audioBlob && transcriptChunks.length > 0 && (
+                  <div className="mt-6 pt-6 border-t border-green-200">
+                    <button
+                      onClick={handleAnalyzeSections}
+                      disabled={uploadStatus === "uploading"}
+                      className="w-full px-8 py-4 bg-blue-600 text-white text-lg font-semibold rounded-lg hover:bg-blue-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg"
+                    >
+                      {uploadStatus === "uploading" ? "Analyzing..." : "Analyze Sections Automatically"}
+                    </button>
+                    <p className="mt-2 text-sm text-gray-600 text-center">
+                      Automatically detect and label Announcements, Sharing, and Sermon sections
+                    </p>
+                  </div>
+                )}
               </div>
             )}
 
@@ -781,6 +981,7 @@ function RecorderPageContent() {
               </div>
             </div>
           </div>
+        </div>
         </div>
       </div>
     </div>

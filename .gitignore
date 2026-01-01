@@ -36,3 +36,7 @@ next-env.d.ts
 # debug logs
 .cursor/debug.log
 
+# environment variables
+.env*.local
+.env
+
