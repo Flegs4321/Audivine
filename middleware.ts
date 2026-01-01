@@ -8,27 +8,9 @@ export function middleware(request: NextRequest) {
   const publicRoutes = ['/login'];
   const isPublicRoute = publicRoutes.includes(pathname) || pathname.startsWith('/api');
 
-  // Check for Supabase auth session cookie
-  // Supabase stores auth tokens in cookies prefixed with 'sb-' and containing 'auth-token'
-  const cookies = request.cookies.getAll();
-  const hasAuthCookie = cookies.some(
-    (cookie) => cookie.name.startsWith('sb-') && cookie.name.includes('auth-token')
-  );
-
-  // If it's a public route, allow access
-  if (isPublicRoute) {
-    return NextResponse.next();
-  }
-
-  // If no auth cookie found, redirect to login
-  if (!hasAuthCookie) {
-    const loginUrl = new URL('/login', request.url);
-    // Add the original path as a redirect parameter so we can redirect back after login
-    loginUrl.searchParams.set('redirect', pathname);
-    return NextResponse.redirect(loginUrl);
-  }
-
-  // User is authenticated, allow access
+  // Allow all routes - rely on client-side auth checks instead
+  // This prevents server-side middleware from interfering with Supabase's client-side auth flow
+  // The client-side components (pages) will handle redirects to /login if needed
   return NextResponse.next();
 }
 
