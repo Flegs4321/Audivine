@@ -50,31 +50,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       console.log("Auth state changed:", event, session?.user?.email);
 
-      // Always update user state based on the session provided
+      // Immediately update user state and clear loading for all events
       if (mounted) {
         setUser(session?.user ?? null);
         setLoading(false);
       }
 
-      // For email confirmation, also explicitly check session
-      if (event === "SIGNED_IN" || event === "TOKEN_REFRESHED") {
-        // Give it a moment for the session to be fully established
-        setTimeout(async () => {
-          if (!mounted) return;
-          try {
-            const { data: { session: currentSession }, error } = await supabase.auth.getSession();
-            if (error) {
-              console.error("Error refreshing session:", error);
-            }
-            if (mounted && currentSession) {
-              setUser(currentSession.user);
-              setLoading(false);
-            }
-          } catch (err) {
-            console.error("Error in session refresh:", err);
-          }
-        }, 100);
-      }
+      // For SIGNED_IN events, the session should already be valid
+      // No need for additional timeout/refresh since the session is provided
     });
 
     return () => {
