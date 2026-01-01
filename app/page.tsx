@@ -15,12 +15,19 @@ export default function Home() {
       // Check if hash contains auth tokens (from email confirmation)
       const hash = window.location.hash;
       if (hash.includes("access_token") || hash.includes("type=recovery")) {
-        // Let Supabase handle the hash, then clean up the URL
-        setTimeout(() => {
+        // Let Supabase handle the hash, then clean up the URL after a delay
+        // This gives Supabase time to process the tokens from the hash
+        const cleanup = setTimeout(() => {
           if (window.location.hash) {
-            window.history.replaceState(null, "", window.location.pathname + window.location.search);
+            window.history.replaceState(
+              null,
+              "",
+              window.location.pathname + window.location.search
+            );
           }
-        }, 1000);
+        }, 2000); // Increased delay to ensure Supabase processes the tokens
+
+        return () => clearTimeout(cleanup);
       }
     }
   }, []);

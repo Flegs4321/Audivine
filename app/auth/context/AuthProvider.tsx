@@ -48,29 +48,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (!mounted) return;
 
-      // For email confirmation and sign-in events, explicitly refresh the session
+      console.log("Auth state changed:", event, session?.user?.email);
+
+      // Always update user state based on the session provided
+      if (mounted) {
+        setUser(session?.user ?? null);
+        setLoading(false);
+      }
+
+      // For email confirmation, also explicitly check session
       if (event === "SIGNED_IN" || event === "TOKEN_REFRESHED") {
-        try {
-          const { data: { session: currentSession }, error } = await supabase.auth.getSession();
-          if (error) {
-            console.error("Error refreshing session:", error);
+        // Give it a moment for the session to be fully established
+        setTimeout(async () => {
+          if (!mounted) return;
+          try {
+            const { data: { session: currentSession }, error } = await supabase.auth.getSession();
+            if (error) {
+              console.error("Error refreshing session:", error);
+            }
+            if (mounted && currentSession) {
+              setUser(currentSession.user);
+              setLoading(false);
+            }
+          } catch (err) {
+            console.error("Error in session refresh:", err);
           }
-          if (mounted) {
-            setUser(currentSession?.user ?? null);
-            setLoading(false);
-          }
-        } catch (err) {
-          console.error("Error in auth state change:", err);
-          if (mounted) {
-            setUser(session?.user ?? null);
-            setLoading(false);
-          }
-        }
-      } else {
-        if (mounted) {
-          setUser(session?.user ?? null);
-          setLoading(false);
-        }
+        }, 100);
       }
     });
 

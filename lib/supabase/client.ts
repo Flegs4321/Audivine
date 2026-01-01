@@ -8,7 +8,13 @@ const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
 let supabase: SupabaseClient;
 
 if (supabaseUrl && supabaseAnonKey) {
-  supabase = createClient(supabaseUrl, supabaseAnonKey);
+  supabase = createClient(supabaseUrl, supabaseAnonKey, {
+    auth: {
+      autoRefreshToken: true,
+      persistSession: true,
+      detectSessionInUrl: true, // Important: detects sessions from URL hash fragments
+    },
+  });
 } else {
   // Create a dummy client that will fail gracefully at runtime
   supabase = createClient(
