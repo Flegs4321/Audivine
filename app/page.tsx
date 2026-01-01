@@ -9,6 +9,22 @@ export default function Home() {
   const router = useRouter();
   const { user, signOut, loading } = useAuth();
 
+  // Clear hash fragments after email confirmation (Supabase adds these to the URL)
+  useEffect(() => {
+    if (typeof window !== "undefined" && window.location.hash) {
+      // Check if hash contains auth tokens (from email confirmation)
+      const hash = window.location.hash;
+      if (hash.includes("access_token") || hash.includes("type=recovery")) {
+        // Let Supabase handle the hash, then clean up the URL
+        setTimeout(() => {
+          if (window.location.hash) {
+            window.history.replaceState(null, "", window.location.pathname + window.location.search);
+          }
+        }, 1000);
+      }
+    }
+  }, []);
+
   // Redirect to login if not authenticated
   useEffect(() => {
     if (!loading && !user) {
