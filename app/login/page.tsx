@@ -48,7 +48,16 @@ function LoginPageContent() {
         const { error, data } = await signUp(email, password);
         
         if (error) {
-          setError(error.message);
+          // Check for specific error cases
+          if (error.message?.includes("already registered") || 
+              error.message?.includes("already exists") ||
+              error.message?.includes("User already registered") ||
+              error.status === 422) {
+            setError("An account with this email already exists. Please sign in instead.");
+            setIsSignUp(false); // Switch to sign in view
+          } else {
+            setError(error.message || "An error occurred during signup");
+          }
           setLoading(false);
           return;
         }
