@@ -1,10 +1,37 @@
 "use client";
 
+import { useEffect } from "react";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "./auth/context/AuthProvider";
 
 export default function Home() {
-  const { user, signOut } = useAuth();
+  const router = useRouter();
+  const { user, signOut, loading } = useAuth();
+
+  // Redirect to login if not authenticated
+  useEffect(() => {
+    if (!loading && !user) {
+      router.push("/login");
+    }
+  }, [user, loading, router]);
+
+  // Show loading state while checking authentication
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+          <p className="text-gray-600">Loading...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Don't render anything if not authenticated (will redirect)
+  if (!user) {
+    return null;
+  }
 
   return (
     <div className="min-h-screen flex flex-col bg-gray-50">
@@ -13,24 +40,13 @@ export default function Home() {
         <div className="max-w-7xl mx-auto py-4 flex items-center justify-between gap-4 px-6">
           <h1 className="text-3xl font-bold text-gray-900">Audivine</h1>
           <div className="flex items-center gap-4">
-            {user ? (
-              <>
-                <span className="text-sm text-gray-600">{user.email}</span>
-                <button
-                  onClick={signOut}
-                  className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
-                >
-                  Logout
-                </button>
-              </>
-            ) : (
-              <Link
-                href="/login"
-                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-              >
-                Login
-              </Link>
-            )}
+            <span className="text-sm text-gray-600">{user.email}</span>
+            <button
+              onClick={signOut}
+              className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
+            >
+              Logout
+            </button>
           </div>
         </div>
       </header>

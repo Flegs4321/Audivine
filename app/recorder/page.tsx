@@ -20,8 +20,16 @@ interface Segment {
 function RecorderPageContent() {
   const router = useRouter();
   const transcription = useTranscription();
-  const { user, signOut } = useAuth();
+  const { user, signOut, loading: authLoading } = useAuth();
   const [state, setState] = useState<RecordingState>("idle");
+
+  // Redirect to login if not authenticated
+  useEffect(() => {
+    if (!authLoading && !user) {
+      router.push("/login?redirect=/recorder");
+    }
+  }, [user, authLoading, router]);
+
   const [activeSegment, setActiveSegment] = useState<SegmentType | null>(null);
   const [activeSegmentStartMs, setActiveSegmentStartMs] = useState<number | null>(null);
   const [segments, setSegments] = useState<Segment[]>([]);
@@ -571,6 +579,23 @@ function RecorderPageContent() {
     }
   };
 
+  // Show loading state while checking authentication
+  if (authLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+          <p className="text-gray-600">Loading...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Don't render if not authenticated (will redirect)
+  if (!user) {
+    return null;
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
       {/* Header */}
@@ -586,24 +611,13 @@ function RecorderPageContent() {
             <h1 className="text-3xl font-bold text-gray-900">Audivine</h1>
           </div>
           <div className="flex items-center gap-4">
-            {user ? (
-              <>
-                <span className="text-sm text-gray-600">{user.email}</span>
-                <button
-                  onClick={signOut}
-                  className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
-                >
-                  Logout
-                </button>
-              </>
-            ) : (
-              <Link
-                href="/login"
-                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-              >
-                Login
-              </Link>
-            )}
+            <span className="text-sm text-gray-600">{user.email}</span>
+            <button
+              onClick={signOut}
+              className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
+            >
+              Logout
+            </button>
           </div>
         </div>
       </header>

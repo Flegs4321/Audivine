@@ -1,38 +1,89 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useState, useEffect, Suspense } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "../auth/context/AuthProvider";
 
-export default function LoginPage() {
+function LoginPageContent() {
   const router = useRouter();
-  const { signIn } = useAuth();
+  const searchParams = useSearchParams();
+  const { user, signIn, signUp, loading: authLoading } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isSignUp, setIsSignUp] = useState(false);
-  const { signUp } = useAuth();
+
+  // Redirect to home if already logged in
+  useEffect(() => {
+    if (user && !authLoading) {
+      const redirectTo = searchParams.get("redirect") || "/";
+      router.push(redirectTo);
+    }
+  }, [user, router, searchParams, authLoading]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError(null);
 
-    try {
-      const { error } = isSignUp
-        ? await signUp(email, password)
-        : await signIn(email, password);
+    // Validate password match for signup
+    if (isSignUp && password !== confirmPassword) {
+      setError("Passwords do not match");
+      setLoading(false);
+      return;
+    }
 
-      if (error) {
-        setError(error.message);
+    // Validate password length
+    if (isSignUp && password.length < 6) {
+      setError("Password must be at least 6 characters long");
+      setLoading(false);
+      return;
+    }
+
+    try {
+      if (isSignUp) {
+        const { error, data } = await signUp(email, password);
+        
+        if (error) {
+          setError(error.message);
+          setLoading(false);
+          return;
+        }
+
+        // Check if session was created (user auto-signed in)
+        // If email confirmation is required, data.session will be null
+        if (data?.session) {
+          // User is automatically signed in - redirect immediately
+          const redirectTo = searchParams.get("redirect") || "/";
+          router.push(redirectTo);
+          router.refresh();
+          setLoading(false);
+        } else {
+          // Email confirmation required
+          setError("Please check your email to confirm your account, then sign in.");
+          setIsSignUp(false); // Switch to sign in view
+          setPassword("");
+          setConfirmPassword("");
+        }
       } else {
-        router.push("/");
+        const { error } = await signIn(email, password);
+        
+        if (error) {
+          setError(error.message);
+          setLoading(false);
+        } else {
+          // The useEffect hook will handle redirect when user state updates
+          setLoading(false);
+          // Clear form
+          setEmail("");
+          setPassword("");
+        }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred");
-    } finally {
       setLoading(false);
     }
   };
@@ -49,7 +100,12 @@ export default function LoginPage() {
               <>
                 Or{" "}
                 <button
-                  onClick={() => setIsSignUp(false)}
+                  type="button"
+                  onClick={() => {
+                    setIsSignUp(false);
+                    setConfirmPassword("");
+                    setError(null);
+                  }}
                   className="font-medium text-blue-600 hover:text-blue-500"
                 >
                   sign in to your existing account
@@ -59,7 +115,12 @@ export default function LoginPage() {
               <>
                 Or{" "}
                 <button
-                  onClick={() => setIsSignUp(true)}
+                  type="button"
+                  onClick={() => {
+                    setIsSignUp(true);
+                    setConfirmPassword("");
+                    setError(null);
+                  }}
                   className="font-medium text-blue-600 hover:text-blue-500"
                 >
                   create a new account
@@ -103,10 +164,30 @@ export default function LoginPage() {
                 required
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="appearance-none rounded-none relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 rounded-b-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 focus:z-10 sm:text-sm"
+                className={`appearance-none rounded-none relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 ${
+                  isSignUp ? "rounded-none" : "rounded-b-md"
+                } focus:outline-none focus:ring-blue-500 focus:border-blue-500 focus:z-10 sm:text-sm`}
                 placeholder="Password"
               />
             </div>
+            {isSignUp && (
+              <div>
+                <label htmlFor="confirmPassword" className="sr-only">
+                  Confirm Password
+                </label>
+                <input
+                  id="confirmPassword"
+                  name="confirmPassword"
+                  type="password"
+                  autoComplete="new-password"
+                  required
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  className="appearance-none rounded-none relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 rounded-b-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 focus:z-10 sm:text-sm"
+                  placeholder="Confirm Password"
+                />
+              </div>
+            )}
           </div>
 
           <div>
@@ -119,16 +200,23 @@ export default function LoginPage() {
             </button>
           </div>
         </form>
-        <div className="text-center">
-          <Link
-            href="/"
-            className="text-sm text-gray-600 hover:text-gray-900"
-          >
-            ← Back to home
-          </Link>
-        </div>
       </div>
     </div>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+          <p className="text-gray-600">Loading...</p>
+        </div>
+      </div>
+    }>
+      <LoginPageContent />
+    </Suspense>
   );
 }
 

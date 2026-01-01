@@ -23,7 +23,7 @@ interface Sermon {
 
 export default function SermonsPage() {
   const router = useRouter();
-  const { user, signOut } = useAuth();
+  const { user, signOut, loading: authLoading } = useAuth();
   const [sermons, setSermons] = useState<Sermon[]>([]);
   const [loading, setLoading] = useState(true);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
@@ -31,10 +31,19 @@ export default function SermonsPage() {
   const [error, setError] = useState<string | null>(null);
   const [playingId, setPlayingId] = useState<string | null>(null);
 
+  // Redirect to login if not authenticated
+  useEffect(() => {
+    if (!authLoading && !user) {
+      router.push("/login?redirect=/sermons");
+    }
+  }, [user, authLoading, router]);
+
   // Load sermons from database
   useEffect(() => {
-    loadSermons();
-  }, []);
+    if (user) {
+      loadSermons();
+    }
+  }, [user]);
 
   const loadSermons = async () => {
     try {
@@ -159,6 +168,23 @@ export default function SermonsPage() {
     return `${minutes}:${secs.toString().padStart(2, "0")}`;
   };
 
+  // Show loading state while checking authentication
+  if (authLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+          <p className="text-gray-600">Loading...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Don't render if not authenticated (will redirect)
+  if (!user) {
+    return null;
+  }
+
   return (
     <div className="min-h-screen bg-gray-50">
       {/* Header */}
@@ -174,24 +200,13 @@ export default function SermonsPage() {
             <h1 className="text-3xl font-bold text-gray-900">Audivine</h1>
           </div>
           <div className="flex items-center gap-4">
-            {user ? (
-              <>
-                <span className="text-sm text-gray-600">{user.email}</span>
-                <button
-                  onClick={signOut}
-                  className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
-                >
-                  Logout
-                </button>
-              </>
-            ) : (
-              <Link
-                href="/login"
-                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-              >
-                Login
-              </Link>
-            )}
+            <span className="text-sm text-gray-600">{user.email}</span>
+            <button
+              onClick={signOut}
+              className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
+            >
+              Logout
+            </button>
           </div>
         </div>
       </header>
