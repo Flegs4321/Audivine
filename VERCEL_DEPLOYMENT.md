@@ -163,7 +163,11 @@ vercel --prod
 
 - **Verify Supabase URL/Key**: Double-check your environment variables in Vercel
 - **Check Supabase Auth settings**: Ensure email auth is enabled
-- **Check redirect URLs**: In Supabase Dashboard → Authentication → URL Configuration, add your Vercel domain to allowed redirect URLs
+- **Fix Email Confirmation Redirects**: 
+  - Go to Supabase Dashboard → Authentication → URL Configuration
+  - Set **Site URL** to: `https://audivine.vercel.app` (or your Vercel URL)
+  - Add to **Redirect URLs**: `https://audivine.vercel.app/**` and `https://audivine.vercel.app/login`
+  - See `SUPABASE_AUTH_SETUP.md` for detailed instructions
 
 ## Important Notes
 
