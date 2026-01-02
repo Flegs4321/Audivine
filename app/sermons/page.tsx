@@ -197,6 +197,18 @@ export default function SermonsPage() {
             >
               Home
             </Link>
+            <Link
+              href="/recorder"
+              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+            >
+              Recordings
+            </Link>
+            <Link
+              href="/sermons"
+              className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
+            >
+              Sermons Library
+            </Link>
             <h1 className="text-3xl font-bold text-gray-900">Audivine</h1>
           </div>
           <div className="flex items-center gap-4">
