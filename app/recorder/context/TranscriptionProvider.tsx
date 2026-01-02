@@ -47,14 +47,12 @@ export function TranscriptionProviderComponent({ children }: { children: React.R
       throw new Error("No transcription provider available");
     }
 
-    // Set up text chunk callback if provided
-    if (textChunkCallback) {
-      provider.onTextChunk(textChunkCallback);
-    }
+    // Callback is already set up via useEffect, don't set it again here
+    // This prevents duplicate callback registration
 
     await provider.start();
     setIsActive(true);
-  }, [provider, textChunkCallback]);
+  }, [provider]);
 
   const stop = useCallback(() => {
     if (provider) {
@@ -65,12 +63,11 @@ export function TranscriptionProviderComponent({ children }: { children: React.R
 
   const onTextChunk = useCallback((callback: (chunk: TranscriptChunk) => void) => {
     setTextChunkCallback(() => callback);
-    if (provider) {
-      provider.onTextChunk(callback);
-    }
-  }, [provider]);
+    // Don't set callback here - let the useEffect handle it to avoid duplicates
+  }, []);
 
   // Update callback on provider when it changes
+  // This ensures the callback is only set once per provider
   useEffect(() => {
     if (provider && textChunkCallback) {
       provider.onTextChunk(textChunkCallback);

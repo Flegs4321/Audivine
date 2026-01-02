@@ -77,20 +77,25 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
     this.recognition.onresult = (event) => {
       if (!this.textChunkCallback) return;
 
+      // Process only NEW results (from resultIndex onwards)
+      // This prevents processing the same results multiple times
       let interimTranscript = "";
       let finalTranscript = "";
 
       for (let i = event.resultIndex; i < event.results.length; i++) {
-        const transcript = event.results[i][0].transcript;
-        if (event.results[i].isFinal) {
+        const result = event.results[i];
+        const transcript = result[0].transcript;
+        
+        if (result.isFinal) {
           finalTranscript += transcript + " ";
         } else {
+          // Only add interim if it's new (not already in final)
           interimTranscript += transcript;
         }
       }
 
-      // Send final results
-      if (finalTranscript.trim() && this.textChunkCallback) {
+      // Send final results first (if any)
+      if (finalTranscript.trim()) {
         const currentMs = Date.now() - this.startTimeMs;
         this.textChunkCallback({
           text: finalTranscript.trim(),
@@ -99,8 +104,9 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
         });
       }
 
-      // Send interim results
-      if (interimTranscript.trim() && this.textChunkCallback) {
+      // Send interim results only if there are no final results in this batch
+      // This prevents showing interim text that's already been finalized
+      if (interimTranscript.trim() && !finalTranscript.trim()) {
         const currentMs = Date.now() - this.startTimeMs;
         this.textChunkCallback({
           text: interimTranscript.trim(),
