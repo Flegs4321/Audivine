@@ -470,7 +470,11 @@ function RecorderPageContent() {
   useEffect(() => {
     if (!transcription.isAvailable) return;
 
+    let isMounted = true;
+
     transcription.onTextChunk((chunk) => {
+      if (!isMounted) return;
+
       setTranscriptChunks((prev) => {
         // If it's an interim result, replace the last interim chunk
         let updated: TranscriptChunk[];
@@ -478,6 +482,19 @@ function RecorderPageContent() {
           updated = [...prev.slice(0, -1), chunk];
         } else {
           // Otherwise, add as new chunk
+          // But first check if we already have this exact chunk to prevent duplicates
+          const isDuplicate = prev.some(
+            (existing) =>
+              existing.text === chunk.text &&
+              existing.timestampMs === chunk.timestampMs &&
+              existing.isFinal === chunk.isFinal
+          );
+          
+          if (isDuplicate) {
+            // Don't add duplicate chunks
+            return prev;
+          }
+          
           updated = [...prev, chunk];
         }
         // Update ref
@@ -485,6 +502,10 @@ function RecorderPageContent() {
         return updated;
       });
     });
+
+    return () => {
+      isMounted = false;
+    };
   }, [transcription.isAvailable, transcription.onTextChunk]);
 
   // Handle automatic section analysis
