@@ -768,16 +768,10 @@ function RecorderPageContent() {
                       setAudioDuration(audioEl.duration);
                     }}
                     onError={(e) => {
-                      // #region agent log
-                      const audioEl = e.target as HTMLAudioElement;
-                      fetch('http://127.0.0.1:7242/ingest/321257dd-001e-4325-9924-8b2713a810bc',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'recorder/page.tsx:523',message:'audio playback error',data:{error:audioEl.error?.code,errorMessage:audioEl.error?.message,networkState:audioEl.networkState,readyState:audioEl.readyState},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
-                      // #endregion
+                      // Handle audio playback errors silently
                     }}
                     onCanPlay={(e) => {
-                      // #region agent log
-                      const audioEl = e.target as HTMLAudioElement;
-                      fetch('http://127.0.0.1:7242/ingest/321257dd-001e-4325-9924-8b2713a810bc',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'recorder/page.tsx:530',message:'audio can play',data:{duration:audioEl.duration,readyState:audioEl.readyState},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
-                      // #endregion
+                      // Audio is ready to play
                     }}
                   >
                     Your browser does not support the audio element.
