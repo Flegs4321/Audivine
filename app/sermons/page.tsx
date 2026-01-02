@@ -313,6 +313,18 @@ export default function SermonsPage() {
     return `${minutes}:${secs.toString().padStart(2, "0")}`;
   };
 
+  const formatTimestamp = (dateString: string): string => {
+    const date = new Date(dateString);
+    return date.toLocaleString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true
+    });
+  };
+
   // Show loading state while checking authentication
   if (authLoading) {
     return (
@@ -494,9 +506,9 @@ export default function SermonsPage() {
                                 {sermon.speaker && (
                                   <span className="font-medium">{sermon.speaker}</span>
                                 )}
-                                {!sermon.sermon_date && (
-                                  <span>{new Date(sermon.created_at).toLocaleDateString()}</span>
-                                )}
+                                <span className="text-xs text-gray-400">
+                                  Recorded: {formatTimestamp(sermon.created_at)}
+                                </span>
                               </div>
                             </div>
                             <div className="flex gap-2">
