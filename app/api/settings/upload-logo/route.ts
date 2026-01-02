@@ -125,27 +125,29 @@ export async function POST(request: NextRequest) {
       });
     
     if (uploadError) {
+      const errorMessage = uploadError.message || "Unknown error";
+      const errorStatus = (uploadError as any).statusCode || (uploadError as any).status || null;
+      
       console.error("[UPLOAD-LOGO] Upload error:", {
         error: uploadError,
-        message: uploadError.message,
-        statusCode: uploadError.statusCode,
-        status: uploadError.status
+        message: errorMessage,
+        statusCode: errorStatus,
       });
       
       // Check if it's an RLS violation
-      if (uploadError.message?.includes("row-level security") || uploadError.statusCode === '403') {
+      if (errorMessage.includes("row-level security") || errorStatus === '403' || errorStatus === 403) {
         return NextResponse.json(
           { 
             error: "Permission denied", 
             message: "Storage bucket RLS policy violation. The storage bucket 'Audivine' needs to allow authenticated users to upload files. Please check your storage bucket policies in Supabase.",
-            details: uploadError.message
+            details: errorMessage
           },
           { status: 403 }
         );
       }
       
       return NextResponse.json(
-        { error: "Failed to upload logo", message: uploadError.message },
+        { error: "Failed to upload logo", message: errorMessage },
         { status: 500 }
       );
     }

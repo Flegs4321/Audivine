@@ -168,6 +168,60 @@ function ReviewPageContent() {
     }
   };
 
+  const generateFullSummary = async () => {
+    if (!recordingId) return;
+
+    setGeneratingSummary(true);
+    try {
+      const { supabase } = await import("@/lib/supabase/client");
+      const { data: { session } } = await supabase.auth.getSession();
+
+      if (!session?.access_token) {
+        throw new Error("Not authenticated");
+      }
+
+      // Combine all sections' transcripts
+      const fullTranscript = sections.map((s) => s.text).join("\n\n");
+
+      const response = await fetch("/api/sermons/generate-summary", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          recordingId,
+          transcript: fullTranscript,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.message || errorData.error || "Failed to generate summary");
+      }
+
+      const data = await response.json();
+      setFullSummary(data.summary);
+      setShowSummaryModal(true);
+    } catch (err) {
+      console.error("Error generating summary:", err);
+      setError(err instanceof Error ? err.message : "Failed to generate summary");
+    } finally {
+      setGeneratingSummary(false);
+    }
+  };
+
+  const copySummaryToClipboard = async () => {
+    if (!fullSummary) return;
+    try {
+      await navigator.clipboard.writeText(fullSummary);
+      alert("Summary copied to clipboard!");
+    } catch (err) {
+      console.error("Failed to copy:", err);
+      alert("Failed to copy to clipboard");
+    }
+  };
+
   const saveChanges = async () => {
     setSaving(true);
     try {
