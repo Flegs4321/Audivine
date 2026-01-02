@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
-export function middleware(request: NextRequest) {
+export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
   // Public routes that don't require authentication
@@ -9,7 +9,7 @@ export function middleware(request: NextRequest) {
   const isPublicRoute = publicRoutes.includes(pathname) || pathname.startsWith('/api');
 
   // Allow all routes - rely on client-side auth checks instead
-  // This prevents server-side middleware from interfering with Supabase's client-side auth flow
+  // This prevents server-side proxy from interfering with Supabase's client-side auth flow
   // The client-side components (pages) will handle redirects to /login if needed
   return NextResponse.next();
 }
