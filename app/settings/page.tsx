@@ -36,12 +36,13 @@ export default function SettingsPage() {
   const [openaiPrompt, setOpenaiPrompt] = useState("");
   const [testingOpenAI, setTestingOpenAI] = useState(false);
   const [openAITestResult, setOpenAITestResult] = useState<{ 
-    connected: boolean;
-    message?: string;
+    connected: boolean; 
+    message?: string; 
     error?: string;
     availableModels?: string[];
     isModelAvailable?: boolean;
     details?: string;
+    apiKeyPrefix?: string;
   } | null>(null);
   const [availableModels, setAvailableModels] = useState<string[]>([]);
 
