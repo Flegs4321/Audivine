@@ -270,11 +270,12 @@ export async function GET(request: NextRequest) {
     });
 
     if (error) {
+      const errorWithHint = error as { message: string; code?: string; details?: string; hint?: string };
       console.error("[API] Database query error:", {
         message: error.message,
         code: error.code,
         details: error.details,
-        hint: error.hint,
+        hint: errorWithHint.hint,
         fullError: error
       });
       return NextResponse.json(
