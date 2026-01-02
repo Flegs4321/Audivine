@@ -165,6 +165,66 @@ function ReviewPageContent() {
     checkOpenAIKey();
   }, [user]);
 
+  const formatTime = (ms: number): string => {
+    const totalSeconds = Math.floor(ms / 1000);
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+  };
+
+  const handleExportSermon = async (section: EditableSection) => {
+    if (!recordingId || section.label !== "Sermon") return;
+
+    try {
+      const { supabase } = await import("@/lib/supabase/client");
+      const { data: { session } } = await supabase.auth.getSession();
+
+      if (!session?.access_token) {
+        alert("You must be logged in to export audio");
+        return;
+      }
+
+      // Fetch recording to get audio URL
+      const recordingResponse = await fetch(`/api/recordings/${recordingId}`, {
+        headers: {
+          "Authorization": `Bearer ${session.access_token}`,
+        },
+      });
+
+      if (!recordingResponse.ok) {
+        throw new Error("Failed to fetch recording");
+      }
+
+      const recordingData = await recordingResponse.json();
+      const audioUrl = recordingData.recording?.storage_url;
+
+      if (!audioUrl) {
+        throw new Error("Recording has no audio file");
+      }
+
+      // Extract audio segment using Web Audio API (client-side)
+      alert(`Extracting sermon segment from ${formatTime(section.startMs)} to ${section.endMs ? formatTime(section.endMs) : 'end'}...\n\nThis will download the full audio. You can use the timestamps to extract the sermon segment manually, or we can implement server-side extraction with ffmpeg.`);
+
+      // For now, provide download link with instructions
+      // In the future, we can implement client-side extraction using Web Audio API
+      // or server-side extraction using ffmpeg
+      const a = document.createElement("a");
+      a.href = audioUrl;
+      a.download = `full-recording-${recordingId}.webm`;
+      a.target = "_blank";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+
+      // Show instructions
+      const instructions = `Sermon Segment:\nStart: ${formatTime(section.startMs)}\nEnd: ${section.endMs ? formatTime(section.endMs) : 'End of recording'}\n\nUse audio editing software (Audacity, GarageBand, etc.) to extract this segment from the downloaded file.`;
+      alert(instructions);
+    } catch (err) {
+      console.error("Export error:", err);
+      alert(err instanceof Error ? err.message : "Failed to export sermon");
+    }
+  };
+
   const updateSection = (id: string, updates: Partial<EditableSection>) => {
     setSections((prev) =>
       prev.map((s) => (s.id === id ? { ...s, ...updates } : s))
@@ -299,23 +359,44 @@ function ReviewPageContent() {
   };
 
   const saveChanges = async () => {
+    if (!recordingId) return;
+    
     setSaving(true);
     try {
-      // TODO: Implement API to save edited sections
-      // await fetch(`/api/recordings/${recordingId}/sections`, {
-      //   method: "PUT",
-      //   headers: { "Content-Type": "application/json" },
-      //   body: JSON.stringify({ sections }),
-      // });
+      const { supabase } = await import("@/lib/supabase/client");
+      const { data: { session } } = await supabase.auth.getSession();
 
-      // Temporary: save to localStorage
-      localStorage.setItem(
-        `recording-sections-${recordingId}`,
-        JSON.stringify(sections)
-      );
+      if (!session?.access_token) {
+        throw new Error("Not authenticated");
+      }
+
+      // Convert sections back to segments format for database
+      const segments = sections.map((s) => ({
+        label: s.label,
+        startMs: s.startMs,
+        endMs: s.endMs,
+        text: s.text,
+        summary: s.summary,
+        bullets: s.bullets,
+      }));
+
+      // Update recording segments in database
+      const response = await fetch(`/api/recordings/${recordingId}/segments`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({ segments }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.message || errorData.error || "Failed to save segments");
+      }
 
       setSaving(false);
-      alert("Changes saved successfully!");
+      alert("Segment times saved successfully!");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save");
       setSaving(false);
@@ -403,11 +484,54 @@ function ReviewPageContent() {
               className="bg-white rounded-lg shadow p-6 border-l-4 border-blue-500"
             >
               <div className="flex justify-between items-start mb-4">
-                <div>
+                <div className="flex-1">
                   <h2 className="text-xl font-semibold text-gray-900">
                     {section.label}
                   </h2>
+                  {/* Segment Time Editing */}
+                  <div className="mt-2 flex gap-4 items-center">
+                    <div className="flex items-center gap-2">
+                      <label className="text-xs text-gray-600">Start:</label>
+                      <input
+                        type="number"
+                        value={Math.floor(section.startMs / 1000)}
+                        onChange={(e) => {
+                          const seconds = parseInt(e.target.value) || 0;
+                          updateSection(section.id, { startMs: seconds * 1000 });
+                        }}
+                        className="w-20 px-2 py-1 text-xs border border-gray-300 rounded"
+                        placeholder="seconds"
+                      />
+                      <span className="text-xs text-gray-500">
+                        ({formatTime(section.startMs)})
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <label className="text-xs text-gray-600">End:</label>
+                      <input
+                        type="number"
+                        value={section.endMs ? Math.floor(section.endMs / 1000) : ""}
+                        onChange={(e) => {
+                          const seconds = parseInt(e.target.value) || null;
+                          updateSection(section.id, { endMs: seconds ? seconds * 1000 : null });
+                        }}
+                        className="w-20 px-2 py-1 text-xs border border-gray-300 rounded"
+                        placeholder="seconds"
+                      />
+                      <span className="text-xs text-gray-500">
+                        {section.endMs ? `(${formatTime(section.endMs)})` : "(end of recording)"}
+                      </span>
+                    </div>
+                  </div>
                 </div>
+                {section.label === "Sermon" && (
+                  <button
+                    onClick={() => handleExportSermon(section)}
+                    className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm"
+                  >
+                    Export for Spotify
+                  </button>
+                )}
               </div>
 
               {/* Tabs */}
