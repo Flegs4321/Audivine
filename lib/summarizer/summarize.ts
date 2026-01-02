@@ -25,7 +25,7 @@ export class OpenAISummarizationProvider implements SummarizationProvider {
 
   async summarize(
     text: string,
-    label: "Announcements" | "Sharing" | "Sermon"
+    label: "Announcements" | "Sharing" | "Sermon" | "Other"
   ): Promise<SectionSummary> {
     const isSermon = label === "Sermon";
 
@@ -35,6 +35,13 @@ export class OpenAISummarizationProvider implements SummarizationProvider {
 2. 5-10 bullet points highlighting key points, scriptures, and takeaways
 
 Return JSON: {"summary": "2-4 sentence summary", "bullets": ["bullet 1", "bullet 2", ...]}
+
+Transcript:
+${text.substring(0, 8000)}`
+      : label === "Other"
+      ? `Summarize this section from a church service transcript in 2-4 sentences. Capture the key information, events, or points shared. This section may contain various types of content.
+
+Return JSON: {"summary": "2-4 sentence summary"}
 
 Transcript:
 ${text.substring(0, 8000)}`
@@ -100,7 +107,7 @@ ${text.substring(0, 8000)}`;
 export class MockSummarizationProvider implements SummarizationProvider {
   async summarize(
     text: string,
-    label: "Announcements" | "Sharing" | "Sermon"
+    label: "Announcements" | "Sharing" | "Sermon" | "Other"
   ): Promise<SectionSummary> {
     const wordCount = text.split(/\s+/).length;
     const isSermon = label === "Sermon";

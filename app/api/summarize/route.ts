@@ -20,7 +20,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (!["Announcements", "Sharing", "Sermon"].includes(label)) {
+    if (!["Announcements", "Sharing", "Sermon", "Other"].includes(label)) {
       return NextResponse.json(
         { error: "Invalid label" },
         { status: 400 }

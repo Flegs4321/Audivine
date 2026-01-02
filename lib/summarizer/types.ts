@@ -13,6 +13,6 @@ export interface SummarizationProvider {
   /**
    * Generate summary for a section
    */
-  summarize(text: string, label: "Announcements" | "Sharing" | "Sermon"): Promise<SectionSummary>;
+  summarize(text: string, label: "Announcements" | "Sharing" | "Sermon" | "Other"): Promise<SectionSummary>;
 }
 

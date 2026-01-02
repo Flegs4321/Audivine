@@ -145,7 +145,10 @@ function ReviewPageContent() {
         }),
       });
 
-      if (!response.ok) throw new Error("Summarization failed");
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.message || errorData.error || "Summarization failed");
+      }
 
       const data = await response.json();
       updateSection(sectionId, {
