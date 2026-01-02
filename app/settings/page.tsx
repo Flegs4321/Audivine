@@ -353,9 +353,17 @@ export default function SettingsPage() {
         const errorData = await response.json().catch(() => ({}));
         const errorMessage = errorData.message || errorData.error || `Failed to save OpenAI settings (${response.status})`;
         
-        // Check if it's a database migration error
+        // Check if it's a database migration error or schema cache issue
+        if (errorMessage.includes("PGRST204") || errorMessage.includes("Could not find")) {
+          if (errorMessage.includes("openai_prompt")) {
+            throw new Error(`PostgREST schema cache needs to refresh. The openai_prompt column was added, but PostgREST hasn't detected it yet. Please wait 10-30 seconds and try again, or restart your Supabase project in the dashboard. If the error persists, verify the column exists by running the verification query in verify_openai_prompt_column.sql`);
+          } else if (errorMessage.includes("column") && errorMessage.includes("does not exist")) {
+            throw new Error(`Database migration required: The column doesn't exist. Please apply the appropriate migration file.`);
+          }
+        }
+        
         if (errorMessage.includes("column") && errorMessage.includes("does not exist")) {
-          throw new Error(`Database migration required: The transcription_method column doesn't exist. Please apply migration: supabase/migrations/012_add_transcription_method.sql`);
+          throw new Error(`Database migration required: The column doesn't exist. Please apply the appropriate migration file.`);
         }
         
         throw new Error(errorMessage);

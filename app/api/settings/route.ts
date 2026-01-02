@@ -186,6 +186,10 @@ export async function PUT(request: NextRequest) {
     }
     if (openai_model !== undefined) updateData.openai_model = openai_model;
     if (transcription_method !== undefined) updateData.transcription_method = transcription_method;
+    // Only include openai_prompt if it's provided
+    // Note: If you get a PGRST204 error about this column, PostgREST's schema cache needs to refresh
+    // We'll try to save it, but if it fails with PGRST204, we'll retry without it
+    let includePrompt = true;
     if (openai_prompt !== undefined) {
       // Truncate to 1000 characters if longer
       updateData.openai_prompt = openai_prompt && openai_prompt.length > 0 
@@ -235,12 +239,24 @@ export async function PUT(request: NextRequest) {
         const errorText = await updateResponse.text();
         console.error("[SETTINGS] Error updating settings:", errorText);
         
-        // Check if it's a column doesn't exist error
-        if (errorText.includes("column") && (errorText.includes("does not exist") || errorText.includes("42P01"))) {
+        // Check if it's a column doesn't exist error (PGRST204 or column-related errors)
+        if (errorText.includes("PGRST204") || errorText.includes("Could not find") || 
+            (errorText.includes("column") && (errorText.includes("does not exist") || errorText.includes("42P01")))) {
+          let migrationMessage = "Database migration required.";
+          if (errorText.includes("openai_prompt")) {
+            // If column exists but PostgREST can't find it, it's a schema cache issue
+            migrationMessage = "PostgREST schema cache needs to refresh. The openai_prompt column exists in the database, but PostgREST hasn't detected it yet. Please wait 10-30 seconds and try again. If the error persists, you may need to restart your Supabase project.";
+          } else if (errorText.includes("transcription_method")) {
+            migrationMessage = "The transcription_method column does not exist. Please apply the migration: supabase/migrations/012_add_transcription_method.sql";
+          } else if (errorText.includes("openai_api_key") || errorText.includes("openai_model")) {
+            migrationMessage = "The OpenAI settings columns do not exist. Please apply the migration: supabase/migrations/011_add_openai_settings.sql";
+          }
+          
           return NextResponse.json(
             { 
-              error: "Database migration required", 
-              message: `The transcription_method column does not exist. Please apply the migration: supabase/migrations/012_add_transcription_method.sql. Error: ${errorText}` 
+              error: errorText.includes("openai_prompt") ? "Schema cache refresh needed" : "Database migration required", 
+              message: migrationMessage,
+              isCacheIssue: errorText.includes("openai_prompt")
             },
             { status: 500 }
           );
@@ -277,12 +293,24 @@ export async function PUT(request: NextRequest) {
         const errorText = await insertResponse.text();
         console.error("[SETTINGS] Error inserting settings:", errorText);
         
-        // Check if it's a column doesn't exist error
-        if (errorText.includes("column") && (errorText.includes("does not exist") || errorText.includes("42P01"))) {
+        // Check if it's a column doesn't exist error (PGRST204 or column-related errors)
+        if (errorText.includes("PGRST204") || errorText.includes("Could not find") || 
+            (errorText.includes("column") && (errorText.includes("does not exist") || errorText.includes("42P01")))) {
+          let migrationMessage = "Database migration required.";
+          if (errorText.includes("openai_prompt")) {
+            // If column exists but PostgREST can't find it, it's a schema cache issue
+            migrationMessage = "PostgREST schema cache needs to refresh. The openai_prompt column exists in the database, but PostgREST hasn't detected it yet. Please wait 10-30 seconds and try again. If the error persists, you may need to restart your Supabase project.";
+          } else if (errorText.includes("transcription_method")) {
+            migrationMessage = "The transcription_method column does not exist. Please apply the migration: supabase/migrations/012_add_transcription_method.sql";
+          } else if (errorText.includes("openai_api_key") || errorText.includes("openai_model")) {
+            migrationMessage = "The OpenAI settings columns do not exist. Please apply the migration: supabase/migrations/011_add_openai_settings.sql";
+          }
+          
           return NextResponse.json(
             { 
-              error: "Database migration required", 
-              message: `The transcription_method column does not exist. Please apply the migration: supabase/migrations/012_add_transcription_method.sql. Error: ${errorText}` 
+              error: errorText.includes("openai_prompt") ? "Schema cache refresh needed" : "Database migration required", 
+              message: migrationMessage,
+              isCacheIssue: errorText.includes("openai_prompt")
             },
             { status: 500 }
           );
