@@ -195,7 +195,8 @@ export async function GET(request: NextRequest) {
       try {
         // Use PostgREST API directly with Authorization header
         // This ensures RLS can extract auth.uid() from the JWT
-        const restUrl = `${supabaseUrl}/rest/v1/recordings?user_id=eq.${user.id}&select=id,filename,duration,created_at,storage_url,file_path,user_id&order=created_at.desc`;
+        // Use select=* to get all columns (handles case where new columns might not exist yet)
+        const restUrl = `${supabaseUrl}/rest/v1/recordings?user_id=eq.${user.id}&select=*&order=created_at.desc`;
         
         const response = await fetch(restUrl, {
           method: 'GET',
@@ -295,6 +296,9 @@ export async function GET(request: NextRequest) {
       created_at: recording.created_at,
       storage_url: recording.storage_url,
       file_path: recording.file_path,
+      sermon_date: recording.sermon_date,
+      sermon_time: recording.sermon_time,
+      speaker: recording.speaker,
     }));
 
     return NextResponse.json({ sermons });

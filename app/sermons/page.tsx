@@ -10,6 +10,7 @@ import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "../auth/context/AuthProvider";
+import Header from "../components/Header";
 
 interface Sermon {
   id: string;
@@ -19,6 +20,9 @@ interface Sermon {
   created_at: string;
   storage_url?: string;
   file_path?: string;
+  sermon_date?: string | null;
+  sermon_time?: string | null;
+  speaker?: string | null;
 }
 
 export default function SermonsPage() {
@@ -30,6 +34,9 @@ export default function SermonsPage() {
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [playingId, setPlayingId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState<Partial<Sermon>>({});
+  const [saving, setSaving] = useState(false);
 
   // Redirect to login if not authenticated
   useEffect(() => {
@@ -232,6 +239,70 @@ export default function SermonsPage() {
     }
   };
 
+  const handleEditSermon = (sermon: Sermon) => {
+    setEditingId(sermon.id);
+    setEditForm({
+      title: sermon.title || "",
+      filename: sermon.filename || "",
+      sermon_date: sermon.sermon_date || "",
+      sermon_time: sermon.sermon_time || "",
+      speaker: sermon.speaker || "",
+    });
+  };
+
+  const handleCancelEdit = () => {
+    setEditingId(null);
+    setEditForm({});
+  };
+
+  const handleSaveEdit = async (sermonId: string) => {
+    setSaving(true);
+    setError(null);
+
+    try {
+      const { supabase } = await import("@/lib/supabase/client");
+      const { data: { session } } = await supabase.auth.getSession();
+      
+      if (!session?.access_token) {
+        throw new Error("Not authenticated");
+      }
+
+      const response = await fetch("/api/sermons/update", {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          id: sermonId,
+          ...editForm,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        const errorMessage = errorData.message || errorData.error || "Failed to update sermon";
+        
+        // Show a helpful message if migration is needed
+        if (errorData.error === "Database migration required") {
+          alert(`Database migration required!\n\n${errorMessage}\n\nPlease apply the migration file: supabase/migrations/008_add_sermon_metadata_fields.sql`);
+        }
+        
+        throw new Error(errorMessage);
+      }
+
+      // Reload sermons
+      await loadSermons();
+      setEditingId(null);
+      setEditForm({});
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to update sermon");
+      console.error("Update error:", err);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const formatDuration = (seconds: number): string => {
     const hours = Math.floor(seconds / 3600);
     const minutes = Math.floor((seconds % 3600) / 60);
@@ -261,41 +332,7 @@ export default function SermonsPage() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      {/* Header */}
-      <header className="bg-white border-b border-gray-200 shadow-sm sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto py-4 flex items-center justify-between gap-4 px-6">
-          <div className="flex items-center gap-4">
-            <Link
-              href="/"
-              className="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors"
-            >
-              Home
-            </Link>
-            <Link
-              href="/recorder"
-              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-            >
-              Record
-            </Link>
-            <Link
-              href="/sermons"
-              className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
-            >
-              Sermons Library
-            </Link>
-            <h1 className="text-3xl font-bold text-gray-900">Audivine</h1>
-          </div>
-          <div className="flex items-center gap-4">
-            <span className="text-sm text-gray-600">{user.email}</span>
-            <button
-              onClick={signOut}
-              className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
-            >
-              Logout
-            </button>
-          </div>
-        </div>
-      </header>
+      <Header />
 
       <div className="max-w-7xl mx-auto p-6">
         <div className="mb-6">
@@ -359,41 +396,142 @@ export default function SermonsPage() {
                 <div className="divide-y divide-gray-200">
                   {sermons.map((sermon) => (
                     <div key={sermon.id} className="p-6 hover:bg-gray-50">
-                      <div className="flex items-start justify-between">
-                        <div className="flex-1">
-                          <h3 className="text-lg font-semibold text-gray-900">
-                            {sermon.title || sermon.filename}
-                          </h3>
-                          <div className="flex items-center gap-4 mt-2 text-sm text-gray-500">
-                            <span>{formatDuration(sermon.duration)}</span>
-                            <span>{new Date(sermon.created_at).toLocaleDateString()}</span>
+                      {editingId === sermon.id ? (
+                        <div className="space-y-4">
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">
+                              Title
+                            </label>
+                            <input
+                              type="text"
+                              value={editForm.title || ""}
+                              onChange={(e) => setEditForm({ ...editForm, title: e.target.value })}
+                              className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                              placeholder="Sermon title"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">
+                              Recording Name (Filename)
+                            </label>
+                            <input
+                              type="text"
+                              value={editForm.filename || ""}
+                              onChange={(e) => setEditForm({ ...editForm, filename: e.target.value })}
+                              className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                              placeholder="Recording filename"
+                            />
+                            <p className="mt-1 text-xs text-gray-500">This is the original filename. Changing it won't rename the file in storage.</p>
+                          </div>
+                          <div className="grid grid-cols-2 gap-4">
+                            <div>
+                              <label className="block text-sm font-medium text-gray-700 mb-1">
+                                Date
+                              </label>
+                              <input
+                                type="date"
+                                value={editForm.sermon_date || ""}
+                                onChange={(e) => setEditForm({ ...editForm, sermon_date: e.target.value })}
+                                className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-sm font-medium text-gray-700 mb-1">
+                                Time
+                              </label>
+                              <input
+                                type="time"
+                                value={editForm.sermon_time || ""}
+                                onChange={(e) => setEditForm({ ...editForm, sermon_time: e.target.value })}
+                                className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                              />
+                            </div>
+                          </div>
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">
+                              Speaker
+                            </label>
+                            <input
+                              type="text"
+                              value={editForm.speaker || ""}
+                              onChange={(e) => setEditForm({ ...editForm, speaker: e.target.value })}
+                              className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                              placeholder="Speaker name"
+                            />
+                          </div>
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => handleSaveEdit(sermon.id)}
+                              disabled={saving}
+                              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 text-sm"
+                            >
+                              {saving ? "Saving..." : "Save"}
+                            </button>
+                            <button
+                              onClick={handleCancelEdit}
+                              disabled={saving}
+                              className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 disabled:opacity-50 text-sm"
+                            >
+                              Cancel
+                            </button>
                           </div>
                         </div>
-                        <div className="flex gap-2">
-                          {sermon.storage_url && (
-                            <>
+                      ) : (
+                        <>
+                          <div className="flex items-start justify-between">
+                            <div className="flex-1">
+                              <h3 className="text-lg font-semibold text-gray-900">
+                                {sermon.title || sermon.filename}
+                              </h3>
+                              <div className="flex items-center gap-4 mt-2 text-sm text-gray-500">
+                                <span>{formatDuration(sermon.duration)}</span>
+                                {sermon.sermon_date && (
+                                  <span>{new Date(sermon.sermon_date).toLocaleDateString()}</span>
+                                )}
+                                {sermon.sermon_time && (
+                                  <span>{sermon.sermon_time}</span>
+                                )}
+                                {sermon.speaker && (
+                                  <span className="font-medium">{sermon.speaker}</span>
+                                )}
+                                {!sermon.sermon_date && (
+                                  <span>{new Date(sermon.created_at).toLocaleDateString()}</span>
+                                )}
+                              </div>
+                            </div>
+                            <div className="flex gap-2">
                               <button
-                                onClick={() => setPlayingId(playingId === sermon.id ? null : sermon.id)}
-                                className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm"
+                                onClick={() => handleEditSermon(sermon)}
+                                className="px-4 py-2 bg-yellow-600 text-white rounded-lg hover:bg-yellow-700 text-sm"
                               >
-                                {playingId === sermon.id ? "Hide Player" : "Play"}
+                                Edit
                               </button>
+                              {sermon.storage_url && (
+                                <>
+                                  <button
+                                    onClick={() => setPlayingId(playingId === sermon.id ? null : sermon.id)}
+                                    className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm"
+                                  >
+                                    {playingId === sermon.id ? "Hide Player" : "Play"}
+                                  </button>
+                                  <button
+                                    onClick={() => router.push(`/recorder/review?id=${sermon.id}`)}
+                                    className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm"
+                                  >
+                                    Review
+                                  </button>
+                                </>
+                              )}
                               <button
-                                onClick={() => router.push(`/recorder/review?id=${sermon.id}`)}
-                                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm"
+                                onClick={() => handleDeleteSermon(sermon.id, sermon.title || sermon.filename)}
+                                className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 text-sm"
                               >
-                                Review
+                                Delete
                               </button>
-                            </>
-                          )}
-                          <button
-                            onClick={() => handleDeleteSermon(sermon.id, sermon.title || sermon.filename)}
-                            className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 text-sm"
-                          >
-                            Delete
-                          </button>
-                        </div>
-                      </div>
+                            </div>
+                          </div>
+                        </>
+                      )}
                       {/* Audio Player */}
                       {playingId === sermon.id && sermon.storage_url && (
                         <div className="mt-4 pt-4 border-t border-gray-200">

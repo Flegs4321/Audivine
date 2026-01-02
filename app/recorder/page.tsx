@@ -7,6 +7,7 @@ import { TranscriptionProviderComponent, useTranscription } from "./context/Tran
 import type { TranscriptChunk } from "./types/transcription";
 import { uploadRecording } from "@/lib/supabase/storage";
 import { useAuth } from "../auth/context/AuthProvider";
+import Header from "../components/Header";
 
 type RecordingState = "idle" | "recording" | "paused" | "stopped";
 type SegmentType = "Announcements" | "Sharing" | "Sermon";
@@ -604,41 +605,7 @@ function RecorderPageContent() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
-      {/* Header */}
-      <header className="bg-white border-b border-gray-200 shadow-sm sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto py-4 flex items-center justify-between gap-4 px-6">
-          <div className="flex items-center gap-4">
-            <Link
-              href="/"
-              className="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors"
-            >
-              Home
-            </Link>
-            <Link
-              href="/recorder"
-              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-            >
-              Record
-            </Link>
-            <Link
-              href="/sermons"
-              className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
-            >
-              Sermons Library
-            </Link>
-            <h1 className="text-3xl font-bold text-gray-900">Audivine</h1>
-          </div>
-          <div className="flex items-center gap-4">
-            <span className="text-sm text-gray-600">{user.email}</span>
-            <button
-              onClick={signOut}
-              className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
-            >
-              Logout
-            </button>
-          </div>
-        </div>
-      </header>
+      <Header />
 
       <div className="p-6">
         <div className="max-w-6xl mx-auto">
