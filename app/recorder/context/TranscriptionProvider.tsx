@@ -73,6 +73,16 @@ export function TranscriptionProviderComponent({ children }: { children: React.R
       provider.onTextChunk(textChunkCallback);
     }
   }, [provider, textChunkCallback]);
+  
+  // Also re-register callback when provider starts (for pause/resume scenarios)
+  // This ensures callback is re-registered after recognition object is recreated
+  useEffect(() => {
+    if (provider && textChunkCallback && isActive) {
+      // Re-register callback when transcription becomes active
+      // This handles the case where recognition object was recreated in start()
+      provider.onTextChunk(textChunkCallback);
+    }
+  }, [provider, textChunkCallback, isActive]);
 
   const value: TranscriptionContextType = {
     provider,

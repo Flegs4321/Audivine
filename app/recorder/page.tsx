@@ -300,6 +300,8 @@ function RecorderPageContent() {
       // Stop transcription
       if (transcription.isActive) {
         transcription.stop();
+        // Give it a moment to fully stop before ending
+        await new Promise(resolve => setTimeout(resolve, 100));
       }
 
       // Close active segment if any
@@ -397,6 +399,9 @@ function RecorderPageContent() {
       }
 
       // Restart transcription if available
+      // Wait a moment to ensure previous stop is complete
+      await new Promise(resolve => setTimeout(resolve, 150));
+      
       if (transcription.isAvailable && !transcription.isActive) {
         try {
           await transcription.start();
@@ -438,7 +443,7 @@ function RecorderPageContent() {
     if (!transcription.isAvailable) return;
 
     let isMounted = true;
-    let lastFinalIndex = -1; // Track the last final chunk index to prevent duplicates
+    const seenFinalTexts = new Set<string>(); // Track final texts we've seen
 
     transcription.onTextChunk((chunk) => {
       if (!isMounted) return;
@@ -450,20 +455,22 @@ function RecorderPageContent() {
           if (prev.length > 0 && !prev[prev.length - 1].isFinal) {
             return [...prev.slice(0, -1), chunk];
           }
-          // Otherwise add as new interim chunk
-          return [...prev, chunk];
+          // Otherwise add as new interim chunk (but only if we haven't seen this as final)
+          if (!seenFinalTexts.has(chunk.text)) {
+            return [...prev, chunk];
+          }
+          return prev;
         }
         
         // For final chunks, check if we've already added this exact text
         // This prevents duplicates from the Web Speech API
-        const existingIndex = prev.findIndex(
-          (existing) => existing.text === chunk.text && existing.isFinal
-        );
-        
-        if (existingIndex !== -1) {
+        if (seenFinalTexts.has(chunk.text)) {
           // Already have this final chunk, don't add again
           return prev;
         }
+        
+        // Mark as seen
+        seenFinalTexts.add(chunk.text);
         
         // Remove any interim chunks that might overlap with this final chunk
         // and add the final chunk
