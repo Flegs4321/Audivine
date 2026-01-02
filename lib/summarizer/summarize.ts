@@ -109,11 +109,12 @@ export class MockSummarizationProvider implements SummarizationProvider {
     text: string,
     label: "Announcements" | "Sharing" | "Sermon" | "Other"
   ): Promise<SectionSummary> {
-    const wordCount = text.split(/\s+/).length;
     const isSermon = label === "Sermon";
 
     return {
-      summary: `This ${label.toLowerCase()} section contains approximately ${wordCount} words. ${isSermon ? "The message covers important biblical themes and practical applications." : "Key information and updates were shared with the congregation."}`,
+      summary: isSermon 
+        ? "The message covers important biblical themes and practical applications."
+        : "Key information and updates were shared with the congregation.",
       bullets: isSermon
         ? [
             "Key point from the message",
