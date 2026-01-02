@@ -8,55 +8,112 @@ import { useState, useEffect, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import type { FinalSection } from "@/lib/segmenter/types";
 import type { EditableSection } from "./types";
+import { useAuth } from "@/app/auth/context/AuthProvider";
 
 function ReviewPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const recordingId = searchParams.get("id");
+  const { user } = useAuth();
 
   const [sections, setSections] = useState<EditableSection[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
-  // Load sections from recording (TODO: implement API to fetch)
+  // Load sections from recording
   useEffect(() => {
-    // For now, try to load from localStorage or API
     const loadSections = async () => {
-      try {
-        // TODO: Replace with actual API call
-        // const response = await fetch(`/api/recordings/${recordingId}`);
-        // const data = await response.json();
-        // setSections(data.sections.map((s: FinalSection, i: number) => ({
-        //   ...s,
-        //   id: `section-${i}`,
-        // })));
+      if (!recordingId) {
+        setError("No recording ID provided");
+        setLoading(false);
+        return;
+      }
 
-        // Temporary: load from localStorage
-        const stored = localStorage.getItem(`recording-sections-${recordingId}`);
-        if (stored) {
-          const parsed = JSON.parse(stored);
-          setSections(
-            parsed.map((s: FinalSection, i: number) => ({
-              ...s,
-              id: `section-${i}`,
-            }))
-          );
+      if (!user) {
+        setError("You must be logged in to view recordings");
+        setLoading(false);
+        return;
+      }
+
+      try {
+        setLoading(true);
+        setError(null);
+
+        // Get the session token from Supabase client
+        const { supabase } = await import("@/lib/supabase/client");
+        const { data: { session } } = await supabase.auth.getSession();
+        
+        if (!session?.access_token) {
+          throw new Error("Not authenticated. Please log in.");
         }
+
+        // Fetch recording from API
+        const response = await fetch(`/api/recordings/${recordingId}`, {
+          headers: {
+            "Authorization": `Bearer ${session.access_token}`,
+          },
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          throw new Error(errorData.message || errorData.error || `Failed to load recording: ${response.status}`);
+        }
+
+        const data = await response.json();
+        const recording = data.recording;
+
+        if (!recording) {
+          throw new Error("Recording not found");
+        }
+
+        // Check if we have sections already (from analysis)
+        // If segments exist and have label property, use them as sections
+        let loadedSections: FinalSection[] = [];
+
+        if (recording.segments && Array.isArray(recording.segments) && recording.segments.length > 0) {
+          // Check if segments have label (they're already classified sections)
+          const firstSegment = recording.segments[0];
+          if (firstSegment.label) {
+            // These are already FinalSection objects
+            loadedSections = recording.segments as FinalSection[];
+          }
+        }
+
+        // If no sections, convert transcript_chunks into a simple section
+        if (loadedSections.length === 0 && recording.transcript_chunks && Array.isArray(recording.transcript_chunks) && recording.transcript_chunks.length > 0) {
+          // Combine all transcript chunks into one section
+          const chunks = recording.transcript_chunks;
+          const fullText = chunks.map((chunk: any) => chunk.text).join(" ");
+          const startMs = chunks[0]?.timestampMs || 0;
+          const endMs = chunks[chunks.length - 1]?.timestampMs || (recording.duration * 1000);
+
+          loadedSections = [{
+            label: "Other" as const,
+            startMs,
+            endMs,
+            text: fullText,
+          }];
+        }
+
+        // Convert to EditableSection format
+        setSections(
+          loadedSections.map((s: FinalSection, i: number) => ({
+            ...s,
+            id: `section-${i}`,
+          }))
+        );
+
         setLoading(false);
       } catch (err) {
+        console.error("Error loading sections:", err);
         setError(err instanceof Error ? err.message : "Failed to load sections");
         setLoading(false);
       }
     };
 
-    if (recordingId) {
-      loadSections();
-    } else {
-      setError("No recording ID provided");
-      setLoading(false);
-    }
-  }, [recordingId]);
+    loadSections();
+  }, [recordingId, user]);
 
   const formatTime = (ms: number): string => {
     const totalSeconds = Math.floor(ms / 1000);
@@ -175,8 +232,16 @@ function ReviewPageContent() {
           </div>
         </div>
 
-        <div className="space-y-6">
-          {sections.map((section) => (
+        {sections.length === 0 ? (
+          <div className="bg-white rounded-lg shadow p-6 text-center">
+            <p className="text-gray-600">No transcriptions found for this recording.</p>
+            <p className="text-sm text-gray-500 mt-2">
+              If this recording was just uploaded, transcriptions may still be processing.
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-6">
+            {sections.map((section) => (
             <div
               key={section.id}
               className="bg-white rounded-lg shadow p-6 border-l-4 border-blue-500"
@@ -279,7 +344,8 @@ function ReviewPageContent() {
               </div>
             </div>
           ))}
-        </div>
+          </div>
+        )}
       </div>
     </div>
   );
