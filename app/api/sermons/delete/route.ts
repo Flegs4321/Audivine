@@ -109,6 +109,12 @@ export async function DELETE(request: NextRequest) {
       );
     }
     
+    // Set session for storage operations (required for authenticated storage access)
+    await supabase.auth.setSession({
+      access_token: token,
+      refresh_token: '', // Not needed for storage operations
+    });
+    
     const body = await request.json();
     const { id } = body;
 
@@ -156,15 +162,27 @@ export async function DELETE(request: NextRequest) {
     }
 
     // Delete from storage if file_path exists
+    let storageDeleted = false;
     if (recording.file_path) {
+      console.log("[DELETE] Attempting to delete file from storage:", recording.file_path);
       const { error: storageError } = await supabase.storage
         .from("Audivine")
         .remove([recording.file_path]);
 
       if (storageError) {
-        console.error("Error deleting from storage:", storageError);
+        console.error("[DELETE] Error deleting from storage:", {
+          error: storageError,
+          message: storageError.message,
+          file_path: recording.file_path
+        });
         // Continue to delete from DB even if storage delete fails
+        // (file might already be deleted or not exist)
+      } else {
+        storageDeleted = true;
+        console.log("[DELETE] Successfully deleted file from storage:", recording.file_path);
       }
+    } else {
+      console.warn("[DELETE] No file_path found for recording, skipping storage deletion");
     }
 
     // Delete from database using PostgREST API directly (for RLS)
@@ -191,9 +209,19 @@ export async function DELETE(request: NextRequest) {
     }
 
     const deleteData = await deleteResponse.json();
-    console.log("[DELETE] Delete result:", { deleteData });
+    console.log("[DELETE] Delete result:", { 
+      deleteData,
+      storageDeleted,
+      file_path: recording.file_path 
+    });
 
-    return NextResponse.json({ success: true });
+    return NextResponse.json({ 
+      success: true,
+      storageDeleted,
+      message: storageDeleted 
+        ? "Recording and file deleted successfully" 
+        : "Recording deleted from database" + (recording.file_path ? " (storage deletion may have failed)" : "")
+    });
   } catch (error) {
     console.error("Delete API error:", error);
     return NextResponse.json(
