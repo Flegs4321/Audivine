@@ -7,6 +7,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { getUserOpenAISettings } from "@/lib/openai/user-settings";
 
 export const runtime = "nodejs";
 
@@ -90,14 +91,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const openaiApiKey = process.env.OPENAI_API_KEY || "";
-    if (!openaiApiKey) {
-      return NextResponse.json(
-        { error: "Server configuration error", message: "OpenAI API key not configured" },
-        { status: 500 }
-      );
-    }
-
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
     const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
 
@@ -128,6 +121,21 @@ export async function POST(request: NextRequest) {
         { status: 401 }
       );
     }
+
+    // Get user's OpenAI settings (does NOT fall back to env vars)
+    const userSettings = await getUserOpenAISettings(user.id, token);
+
+    if (!userSettings || !userSettings.apiKey) {
+      return NextResponse.json(
+        { 
+          error: "OpenAI API key not configured", 
+          message: "Please configure your OpenAI API key in Settings to transcribe recordings. Without your own API key, this feature is not available." 
+        },
+        { status: 400 }
+      );
+    }
+
+    const openaiApiKey = userSettings.apiKey;
 
     const body: TranscribeRequest = await request.json();
     const { recordingId, audioUrl } = body;

@@ -31,6 +31,46 @@ function RecorderPageContent() {
     }
   }, [user, authLoading, router]);
 
+  // Load transcription method from settings
+  useEffect(() => {
+    const loadTranscriptionMethod = async () => {
+      if (!user) return;
+
+      try {
+        const { supabase } = await import("@/lib/supabase/client");
+        const { data: { session } } = await supabase.auth.getSession();
+        
+        if (!session?.access_token) return;
+
+        const response = await fetch("/api/settings", {
+          headers: {
+            "Authorization": `Bearer ${session.access_token}`,
+          },
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          const method = (data.settings?.transcription_method as "browser" | "openai") || "browser";
+          setTranscriptionMethod(method);
+        }
+      } catch (err) {
+        console.error("Error loading transcription method:", err);
+      }
+    };
+
+    loadTranscriptionMethod();
+    
+    // Refresh when window regains focus (user might have changed settings in another tab)
+    const handleFocus = () => {
+      loadTranscriptionMethod();
+    };
+    window.addEventListener("focus", handleFocus);
+    
+    return () => {
+      window.removeEventListener("focus", handleFocus);
+    };
+  }, [user]);
+
   const [activeSegment, setActiveSegment] = useState<SegmentType | null>(null);
   const [activeSegmentStartMs, setActiveSegmentStartMs] = useState<number | null>(null);
   const [segments, setSegments] = useState<Segment[]>([]);
@@ -46,6 +86,7 @@ function RecorderPageContent() {
   const [audioDuration, setAudioDuration] = useState<number | null>(null);
   const [audioInputDevices, setAudioInputDevices] = useState<MediaDeviceInfo[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | undefined>(undefined);
+  const [transcriptionMethod, setTranscriptionMethod] = useState<"browser" | "openai">("browser");
 
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const startTimeRef = useRef<number | null>(null);
@@ -280,8 +321,30 @@ function RecorderPageContent() {
       transcriptChunksRef.current = [];
       elapsedTimeRef.current = 0;
       
-      // Start transcription if available
-      if (transcription.isAvailable) {
+      // Start browser transcription if available and user hasn't selected OpenAI
+      // Check user's transcription method preference
+      let useBrowserTranscription = true;
+      try {
+        const { supabase } = await import("@/lib/supabase/client");
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.access_token) {
+          const settingsResponse = await fetch("/api/settings", {
+            headers: {
+              "Authorization": `Bearer ${session.access_token}`,
+            },
+          });
+          if (settingsResponse.ok) {
+            const settingsData = await settingsResponse.json();
+            const transcriptionMethod = settingsData.settings?.transcription_method || "browser";
+            useBrowserTranscription = transcriptionMethod === "browser";
+          }
+        }
+      } catch (err) {
+        console.error("Error checking transcription method:", err);
+        // Default to browser if we can't fetch settings
+      }
+
+      if (useBrowserTranscription && transcription.isAvailable) {
         try {
           await transcription.start();
         } catch (err) {
@@ -399,11 +462,31 @@ function RecorderPageContent() {
         }
       }
 
-      // Restart transcription if available
+      // Restart browser transcription if available and user hasn't selected OpenAI
       // Wait a moment to ensure previous stop is complete
       await new Promise(resolve => setTimeout(resolve, 150));
       
-      if (transcription.isAvailable && !transcription.isActive) {
+      let useBrowserTranscription = true;
+      try {
+        const { supabase } = await import("@/lib/supabase/client");
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.access_token) {
+          const settingsResponse = await fetch("/api/settings", {
+            headers: {
+              "Authorization": `Bearer ${session.access_token}`,
+            },
+          });
+          if (settingsResponse.ok) {
+            const settingsData = await settingsResponse.json();
+            const transcriptionMethod = settingsData.settings?.transcription_method || "browser";
+            useBrowserTranscription = transcriptionMethod === "browser";
+          }
+        }
+      } catch (err) {
+        console.error("Error checking transcription method:", err);
+      }
+
+      if (useBrowserTranscription && transcription.isAvailable && !transcription.isActive) {
         try {
           await transcription.start();
         } catch (err) {
@@ -545,6 +628,27 @@ function RecorderPageContent() {
       const finalTranscriptChunks = transcriptChunksRef.current;
       const finalElapsedTime = elapsedTimeRef.current;
 
+      // Get user's transcription method preference
+      let transcriptionMethod = "browser";
+      try {
+        const { supabase } = await import("@/lib/supabase/client");
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.access_token) {
+          const settingsResponse = await fetch("/api/settings", {
+            headers: {
+              "Authorization": `Bearer ${session.access_token}`,
+            },
+          });
+          if (settingsResponse.ok) {
+            const settingsData = await settingsResponse.json();
+            transcriptionMethod = settingsData.settings?.transcription_method || "browser";
+          }
+        }
+      } catch (err) {
+        console.error("Error fetching transcription method:", err);
+        // Default to browser if we can't fetch settings
+      }
+
       const metadata = {
         filename: "recording",
         duration: finalElapsedTime,
@@ -553,21 +657,56 @@ function RecorderPageContent() {
           startMs: s.startMs,
           endMs: s.endMs,
         })),
-        transcriptChunks: finalTranscriptChunks.map((c) => ({
-          text: c.text,
-          timestampMs: c.timestampMs,
-          isFinal: c.isFinal ?? true,
-        })),
+        // Only include browser transcription chunks if using browser method
+        transcriptChunks: transcriptionMethod === "browser" 
+          ? finalTranscriptChunks.map((c) => ({
+              text: c.text,
+              timestampMs: c.timestampMs,
+              isFinal: c.isFinal ?? true,
+            }))
+          : [], // Empty for OpenAI - will be transcribed after upload
         mimeType,
         fileSize: blob.size,
       };
 
       const result = await uploadRecording(blob, metadata);
 
-      if (result.success && result.url) {
+      if (result.success && result.url && result.recordingId) {
         setUploadStatus("success");
         setUploadedUrl(result.url);
         console.log("[Recorder] Upload successful, recording ID:", result.recordingId);
+        
+        // If using OpenAI transcription, transcribe the audio now
+        if (transcriptionMethod === "openai") {
+          try {
+            const { supabase } = await import("@/lib/supabase/client");
+            const { data: { session } } = await supabase.auth.getSession();
+            
+            if (session?.access_token) {
+              console.log("[Recorder] Starting OpenAI transcription...");
+              const transcribeResponse = await fetch("/api/sermons/transcribe", {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  "Authorization": `Bearer ${session.access_token}`,
+                },
+                body: JSON.stringify({
+                  recordingId: result.recordingId,
+                  audioUrl: result.url,
+                }),
+              });
+
+              if (transcribeResponse.ok) {
+                console.log("[Recorder] OpenAI transcription completed");
+              } else {
+                console.error("[Recorder] OpenAI transcription failed:", await transcribeResponse.text());
+              }
+            }
+          } catch (err) {
+            console.error("[Recorder] Error during OpenAI transcription:", err);
+            // Don't fail the upload if transcription fails
+          }
+        }
         
         // Refresh sermons list after successful upload
         // Navigate to sermons page to see the new recording
@@ -927,18 +1066,35 @@ function RecorderPageContent() {
           {/* Live Transcript Panel */}
           <div className="lg:col-span-1">
             <div className="bg-white rounded-xl shadow-lg p-6 h-full">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-xl font-semibold text-gray-900">
-                  Live Transcript
-                </h2>
-                {transcription.providerName && (
-                  <span className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded">
-                    {transcription.providerName}
+              <h2 className="text-xl font-semibold text-gray-900 mb-2">
+                Live Transcript
+              </h2>
+              <div className="mb-4">
+                <div className="text-xs text-gray-500">
+                  Method: <span className="font-medium text-gray-600">
+                    {transcriptionMethod === "browser" 
+                      ? transcription.providerName || "Browser Speech Recognition"
+                      : "OpenAI Whisper API"}
                   </span>
-                )}
+                </div>
               </div>
               <div className="h-[600px] overflow-y-auto border border-gray-200 rounded-lg p-4 bg-gray-50">
-                {!transcription.isAvailable ? (
+                {transcriptionMethod === "openai" ? (
+                  <div className="text-center text-gray-400 mt-8">
+                    <p className="mb-2 font-semibold text-gray-600">OpenAI Whisper Transcription Selected</p>
+                    <p className="text-xs text-gray-500">
+                      Transcription will be processed automatically after you upload the recording.
+                    </p>
+                    {transcriptChunks.length > 0 && (
+                      <div className="mt-4 text-left">
+                        <p className="text-sm font-semibold text-gray-700 mb-2">Previous Browser Transcription:</p>
+                        {transcriptChunks.map((chunk, idx) => (
+                          <p key={idx} className="text-sm text-gray-600 mb-1">{chunk.text}</p>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ) : !transcription.isAvailable ? (
                   <div className="text-center text-gray-400 mt-8">
                     <p className="mb-2">Realtime provider not configured</p>
                     <p className="text-xs text-gray-500">
@@ -954,7 +1110,7 @@ function RecorderPageContent() {
                     {transcriptChunks.map((chunk, index) => (
                       <div
                         key={index}
-                        className={`leading-relaxed animate-fade-in ${
+                        className={`text-sm leading-relaxed animate-fade-in ${
                           chunk.isFinal
                             ? "text-gray-700"
                             : "text-gray-500 italic"
@@ -963,7 +1119,7 @@ function RecorderPageContent() {
                         <div className="text-xs text-gray-400 mb-1 font-mono">
                           {formatTimeMs(chunk.timestampMs)}
                         </div>
-                        <div>{chunk.text}</div>
+                        <div className="text-sm">{chunk.text}</div>
                       </div>
                     ))}
                   </div>

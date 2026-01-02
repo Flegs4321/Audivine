@@ -9,6 +9,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { getUserOpenAISettings } from "@/lib/openai/user-settings";
 
 export const runtime = "nodejs";
 
@@ -39,6 +40,7 @@ const RETRY_DELAYS = [1000, 2000, 4000];
 async function analyzeWithRetry(
   prompt: string,
   apiKey: string,
+  model: string,
   retryCount = 0
 ): Promise<any> {
   try {
@@ -49,7 +51,7 @@ async function analyzeWithRetry(
         'Authorization': `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: 'gpt-4o-mini',
+        model: model,
         messages: [
           {
             role: 'system',
@@ -74,7 +76,7 @@ async function analyzeWithRetry(
         const delay = RETRY_DELAYS[retryCount] || 8000;
         console.log(`[ANALYZE] Retry ${retryCount + 1}/${MAX_RETRIES} after ${delay}ms`);
         await new Promise(resolve => setTimeout(resolve, delay));
-        return analyzeWithRetry(prompt, apiKey, retryCount + 1);
+        return analyzeWithRetry(prompt, apiKey, model, retryCount + 1);
       }
       
       throw new Error(`OpenAI API error: ${response.status} ${errorText}`);
@@ -92,7 +94,7 @@ async function analyzeWithRetry(
     if (retryCount < MAX_RETRIES && error instanceof Error && error.message.includes('429')) {
       const delay = RETRY_DELAYS[retryCount] || 8000;
       await new Promise(resolve => setTimeout(resolve, delay));
-      return analyzeWithRetry(prompt, apiKey, retryCount + 1);
+      return analyzeWithRetry(prompt, apiKey, model, retryCount + 1);
     }
     throw error;
   }
@@ -107,14 +109,6 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         { error: "Unauthorized", message: "You must be logged in to analyze recordings" },
         { status: 401 }
-      );
-    }
-
-    const openaiApiKey = process.env.OPENAI_API_KEY || "";
-    if (!openaiApiKey) {
-      return NextResponse.json(
-        { error: "Server configuration error", message: "OpenAI API key not configured" },
-        { status: 500 }
       );
     }
 
@@ -148,6 +142,22 @@ export async function POST(request: NextRequest) {
         { status: 401 }
       );
     }
+
+    // Get user's OpenAI settings (does NOT fall back to env vars)
+    const userSettings = await getUserOpenAISettings(user.id, token);
+
+    if (!userSettings || !userSettings.apiKey) {
+      return NextResponse.json(
+        { 
+          error: "OpenAI API key not configured", 
+          message: "Please configure your OpenAI API key in Settings to analyze recordings. Without your own API key, this feature is not available." 
+        },
+        { status: 400 }
+      );
+    }
+
+    const openaiApiKey = userSettings.apiKey;
+    const openaiModel = userSettings.model;
 
     const body: AnalyzeRequest = await request.json();
     const { recordingId, transcript: providedTranscript } = body;
@@ -196,7 +206,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Create prompt for OpenAI
-    const prompt = `Analyze this church service transcript and segment it into three sections: Announcements, Sharing Time, and Sermon.
+    let basePrompt = `Analyze this church service transcript and segment it into three sections: Announcements, Sharing Time, and Sermon.
 
 For each section, provide:
 1. A concise summary (2-4 sentences)
@@ -219,13 +229,17 @@ Return JSON in this exact format:
     "bullets": ["bullet 1", "bullet 2", ...],
     "key_points": ["key point 1", "key point 2", ...]
   }
-}
+}`;
 
-Transcript:
-${fullTranscript.substring(0, 16000)}`;
+    // Append custom prompt if provided
+    if (userSettings.prompt && userSettings.prompt.trim().length > 0) {
+      basePrompt += `\n\nAdditional Instructions:\n${userSettings.prompt.trim()}`;
+    }
+
+    const prompt = `${basePrompt}\n\nTranscript:\n${fullTranscript.substring(0, 16000)}`;
 
     // Call OpenAI with retry logic
-    const analysisResult = await analyzeWithRetry(prompt, openaiApiKey);
+    const analysisResult = await analyzeWithRetry(prompt, openaiApiKey, openaiModel);
 
     // Validate and format response
     const sections = {

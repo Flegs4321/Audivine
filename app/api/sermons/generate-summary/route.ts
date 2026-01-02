@@ -6,6 +6,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { getUserOpenAISettings } from "@/lib/openai/user-settings";
 
 export const runtime = "nodejs";
 
@@ -23,18 +24,10 @@ export async function POST(request: NextRequest) {
 
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
     const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
-    const openaiApiKey = process.env.OPENAI_API_KEY || "";
 
     if (!supabaseUrl || !supabaseAnonKey) {
       return NextResponse.json(
         { error: "Server configuration error", message: "Supabase not configured" },
-        { status: 500 }
-      );
-    }
-
-    if (!openaiApiKey) {
-      return NextResponse.json(
-        { error: "Server configuration error", message: "OpenAI API key not configured" },
         { status: 500 }
       );
     }
@@ -59,6 +52,22 @@ export async function POST(request: NextRequest) {
         { status: 401 }
       );
     }
+
+    // Get user's OpenAI settings (does NOT fall back to env vars)
+    const userSettings = await getUserOpenAISettings(user.id, token);
+
+    if (!userSettings || !userSettings.apiKey) {
+      return NextResponse.json(
+        { 
+          error: "OpenAI API key not configured", 
+          message: "Please configure your OpenAI API key in Settings to generate summaries. Without your own API key, this feature is not available." 
+        },
+        { status: 400 }
+      );
+    }
+
+    const openaiApiKey = userSettings.apiKey;
+    const openaiModel = userSettings.model;
 
     const body = await request.json();
     const { recordingId, transcript } = body;
@@ -114,7 +123,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Generate comprehensive summary using OpenAI
-    const prompt = `You are creating a summary of a church service sermon to send to all church members. 
+    let basePrompt = `You are creating a summary of a church service sermon to send to all church members. 
 
 Please create a well-formatted, engaging summary that includes:
 1. A compelling title for the sermon
@@ -124,10 +133,14 @@ Please create a well-formatted, engaging summary that includes:
 5. Scripture references mentioned (if any)
 6. A closing thought or call to action (1-2 sentences)
 
-Make it warm, accessible, and inspiring. Format it in a way that's easy to read and share.
+Make it warm, accessible, and inspiring. Format it in a way that's easy to read and share.`;
 
-Sermon Transcript:
-${fullTranscript.substring(0, 16000)}`;
+    // Append custom prompt if provided
+    if (userSettings.prompt && userSettings.prompt.trim().length > 0) {
+      basePrompt += `\n\nAdditional Instructions:\n${userSettings.prompt.trim()}`;
+    }
+
+    const prompt = `${basePrompt}\n\nSermon Transcript:\n${fullTranscript.substring(0, 16000)}`;
 
     const openaiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
@@ -136,7 +149,7 @@ ${fullTranscript.substring(0, 16000)}`;
         "Authorization": `Bearer ${openaiApiKey}`,
       },
       body: JSON.stringify({
-        model: "gpt-4o-mini",
+        model: openaiModel,
         messages: [
           {
             role: "system",

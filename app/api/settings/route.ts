@@ -104,7 +104,16 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ settings: null });
     }
     
-    return NextResponse.json({ settings: userSettings });
+    // Mask API key in response for security (show first 7 chars and last 4 chars)
+    const maskedSettings = { ...userSettings };
+    if (maskedSettings.openai_api_key) {
+      const key = maskedSettings.openai_api_key;
+      // Log original key length for debugging
+      console.log("[SETTINGS] Masking API key, original length:", key.length);
+      maskedSettings.openai_api_key = key.substring(0, 7) + "..." + key.substring(key.length - 4);
+    }
+    
+    return NextResponse.json({ settings: maskedSettings });
   } catch (error) {
     console.error("Get settings API error:", error);
     return NextResponse.json(
@@ -161,7 +170,7 @@ export async function PUT(request: NextRequest) {
     }
     
     const body = await request.json();
-    const { church_logo_url, church_name } = body;
+    const { church_logo_url, church_name, openai_api_key, openai_model, transcription_method, openai_prompt } = body;
     
     // CRITICAL: Always set user_id to the authenticated user's ID
     // This ensures settings are always user-specific and prevents any tampering
@@ -169,6 +178,20 @@ export async function PUT(request: NextRequest) {
     const updateData: any = { user_id: user.id };
     if (church_logo_url !== undefined) updateData.church_logo_url = church_logo_url;
     if (church_name !== undefined) updateData.church_name = church_name;
+    // Only update API key if it's provided and not masked (doesn't contain "...")
+    if (openai_api_key !== undefined && openai_api_key && !openai_api_key.includes("...")) {
+      // Log for debugging (don't log the full key, just length and prefix)
+      console.log("[SETTINGS] Saving API key, length:", openai_api_key.length, "starts with:", openai_api_key.substring(0, 7));
+      updateData.openai_api_key = openai_api_key;
+    }
+    if (openai_model !== undefined) updateData.openai_model = openai_model;
+    if (transcription_method !== undefined) updateData.transcription_method = transcription_method;
+    if (openai_prompt !== undefined) {
+      // Truncate to 1000 characters if longer
+      updateData.openai_prompt = openai_prompt && openai_prompt.length > 0 
+        ? openai_prompt.substring(0, 1000).trim() 
+        : null;
+    }
     
     // Check if settings exist using PostgREST API (more reliable for RLS)
     const checkUrl = `${supabaseUrl}/rest/v1/user_settings?user_id=eq.${user.id}&select=id`;
@@ -211,6 +234,18 @@ export async function PUT(request: NextRequest) {
       if (!updateResponse.ok) {
         const errorText = await updateResponse.text();
         console.error("[SETTINGS] Error updating settings:", errorText);
+        
+        // Check if it's a column doesn't exist error
+        if (errorText.includes("column") && (errorText.includes("does not exist") || errorText.includes("42P01"))) {
+          return NextResponse.json(
+            { 
+              error: "Database migration required", 
+              message: `The transcription_method column does not exist. Please apply the migration: supabase/migrations/012_add_transcription_method.sql. Error: ${errorText}` 
+            },
+            { status: 500 }
+          );
+        }
+        
         return NextResponse.json(
           { error: "Failed to update settings", message: errorText },
           { status: updateResponse.status }
@@ -219,6 +254,11 @@ export async function PUT(request: NextRequest) {
       
       const updateResult = await updateResponse.json();
       result = Array.isArray(updateResult) ? updateResult[0] : updateResult;
+      
+      // Log saved key length for debugging
+      if (result?.openai_api_key) {
+        console.log("[SETTINGS] API key saved successfully, length:", result.openai_api_key.length);
+      }
     } else {
       // Insert new settings using PostgREST API (more reliable for RLS)
       const insertUrl = `${supabaseUrl}/rest/v1/user_settings`;
@@ -236,6 +276,17 @@ export async function PUT(request: NextRequest) {
       if (!insertResponse.ok) {
         const errorText = await insertResponse.text();
         console.error("[SETTINGS] Error inserting settings:", errorText);
+        
+        // Check if it's a column doesn't exist error
+        if (errorText.includes("column") && (errorText.includes("does not exist") || errorText.includes("42P01"))) {
+          return NextResponse.json(
+            { 
+              error: "Database migration required", 
+              message: `The transcription_method column does not exist. Please apply the migration: supabase/migrations/012_add_transcription_method.sql. Error: ${errorText}` 
+            },
+            { status: 500 }
+          );
+        }
         
         // Check if it's an RLS violation
         if (errorText.includes("row-level security") || errorText.includes("42501")) {

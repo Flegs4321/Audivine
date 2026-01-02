@@ -26,6 +26,7 @@ function ReviewPageContent() {
   const [fullSummary, setFullSummary] = useState<string | null>(null);
   const [generatingSummary, setGeneratingSummary] = useState(false);
   const [showSummaryModal, setShowSummaryModal] = useState(false);
+  const [hasOpenAIKey, setHasOpenAIKey] = useState<boolean | null>(null);
 
   // Load sections from recording
   useEffect(() => {
@@ -121,6 +122,49 @@ function ReviewPageContent() {
     loadSections();
   }, [recordingId, user]);
 
+  // Check if user has OpenAI API key configured
+  useEffect(() => {
+    const checkOpenAIKey = async () => {
+      if (!user) {
+        setHasOpenAIKey(false);
+        return;
+      }
+
+      try {
+        const { supabase } = await import("@/lib/supabase/client");
+        const { data: { session } } = await supabase.auth.getSession();
+
+        if (!session?.access_token) {
+          setHasOpenAIKey(false);
+          return;
+        }
+
+        const response = await fetch("/api/settings", {
+          headers: {
+            "Authorization": `Bearer ${session.access_token}`,
+          },
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          // Check if API key exists (even if masked in response, it means user has configured one)
+          // Masked keys will be like "sk-xxxx...xxxx" which is still > 10 chars
+          const hasKey = data.settings?.openai_api_key && 
+                        data.settings.openai_api_key.length > 10 &&
+                        data.settings.openai_api_key.startsWith("sk-");
+          setHasOpenAIKey(hasKey);
+        } else {
+          setHasOpenAIKey(false);
+        }
+      } catch (err) {
+        console.error("Error checking OpenAI key:", err);
+        setHasOpenAIKey(false);
+      }
+    };
+
+    checkOpenAIKey();
+  }, [user]);
+
   const updateSection = (id: string, updates: Partial<EditableSection>) => {
     setSections((prev) =>
       prev.map((s) => (s.id === id ? { ...s, ...updates } : s))
@@ -142,9 +186,20 @@ function ReviewPageContent() {
     updateSection(sectionId, { isRegeneratingSummary: true });
 
     try {
+      // Get the session token from Supabase client
+      const { supabase } = await import("@/lib/supabase/client");
+      const { data: { session } } = await supabase.auth.getSession();
+
+      if (!session?.access_token) {
+        throw new Error("Not authenticated");
+      }
+
       const response = await fetch("/api/summarize", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${session.access_token}`,
+        },
         body: JSON.stringify({
           text: section.text,
           label: section.label,
@@ -153,7 +208,15 @@ function ReviewPageContent() {
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.message || errorData.error || "Summarization failed");
+        const errorMessage = errorData.message || errorData.error || "Summarization failed";
+        
+        // Check if it's an API key error
+        if (errorMessage.includes("API key not configured") || errorMessage.includes("not available")) {
+          setHasOpenAIKey(false);
+          alert("OpenAI API key not configured. Please configure your API key in Settings to use summarization features.");
+        }
+        
+        throw new Error(errorMessage);
       }
 
       const data = await response.json();
@@ -171,7 +234,13 @@ function ReviewPageContent() {
   const generateFullSummary = async () => {
     if (!recordingId) return;
 
+    if (!hasOpenAIKey) {
+      setError("OpenAI API key not configured. Please configure your API key in Settings to generate summaries.");
+      return;
+    }
+
     setGeneratingSummary(true);
+    setError(null);
     try {
       const { supabase } = await import("@/lib/supabase/client");
       const { data: { session } } = await supabase.auth.getSession();
@@ -197,7 +266,14 @@ function ReviewPageContent() {
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.message || errorData.error || "Failed to generate summary");
+        const errorMessage = errorData.message || errorData.error || "Failed to generate summary";
+        
+        // Check if it's an API key error
+        if (errorMessage.includes("API key not configured") || errorMessage.includes("not available")) {
+          setHasOpenAIKey(false);
+        }
+        
+        throw new Error(errorMessage);
       }
 
       const data = await response.json();
@@ -281,10 +357,18 @@ function ReviewPageContent() {
         <div className="mb-6 flex justify-between items-center">
           <h1 className="text-3xl font-bold text-gray-900">Review Sections</h1>
           <div className="space-x-4">
+            {hasOpenAIKey === false && (
+              <div className="bg-yellow-50 border border-yellow-200 rounded-lg px-4 py-2 mr-4">
+                <p className="text-sm text-yellow-800">
+                  ⚠️ Configure OpenAI API key in <a href="/settings" className="underline font-semibold">Settings</a> to use summarization
+                </p>
+              </div>
+            )}
             <button
               onClick={generateFullSummary}
-              disabled={generatingSummary || sections.length === 0}
-              className="px-6 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50"
+              disabled={generatingSummary || sections.length === 0 || hasOpenAIKey === false}
+              className="px-6 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              title={hasOpenAIKey === false ? "OpenAI API key required. Configure in Settings." : ""}
             >
               {generatingSummary ? "Generating..." : "Generate Summary for Members"}
             </button>

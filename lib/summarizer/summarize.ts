@@ -12,15 +12,18 @@ export class OpenAISummarizationProvider implements SummarizationProvider {
   private apiKey: string;
   private model: string;
   private baseUrl?: string;
+  private customPrompt?: string | null;
 
   constructor(options: {
     apiKey: string;
     model?: string;
     baseUrl?: string;
+    customPrompt?: string | null;
   }) {
     this.apiKey = options.apiKey;
     this.model = options.model || "gpt-4o-mini";
     this.baseUrl = options.baseUrl;
+    this.customPrompt = options.customPrompt;
   }
 
   async summarize(
@@ -29,28 +32,26 @@ export class OpenAISummarizationProvider implements SummarizationProvider {
   ): Promise<SectionSummary> {
     const isSermon = label === "Sermon";
 
-    const prompt = isSermon
+    let basePrompt = isSermon
       ? `Summarize this ${label.toLowerCase()} section from a church service transcript. Provide:
 1. A concise summary paragraph (2-4 sentences) capturing the main message
 2. 5-10 bullet points highlighting key points, scriptures, and takeaways
 
-Return JSON: {"summary": "2-4 sentence summary", "bullets": ["bullet 1", "bullet 2", ...]}
-
-Transcript:
-${text.substring(0, 8000)}`
+Return JSON: {"summary": "2-4 sentence summary", "bullets": ["bullet 1", "bullet 2", ...]}`
       : label === "Other"
       ? `Summarize this section from a church service transcript in 2-4 sentences. Capture the key information, events, or points shared. This section may contain various types of content.
 
-Return JSON: {"summary": "2-4 sentence summary"}
-
-Transcript:
-${text.substring(0, 8000)}`
+Return JSON: {"summary": "2-4 sentence summary"}`
       : `Summarize this ${label.toLowerCase()} section from a church service transcript in 2-4 sentences. Capture the key information, events, or points shared.
 
-Return JSON: {"summary": "2-4 sentence summary"}
+Return JSON: {"summary": "2-4 sentence summary"}`;
 
-Transcript:
-${text.substring(0, 8000)}`;
+    // Append custom prompt if provided
+    if (this.customPrompt && this.customPrompt.trim().length > 0) {
+      basePrompt += `\n\nAdditional Instructions:\n${this.customPrompt.trim()}`;
+    }
+
+    const prompt = `${basePrompt}\n\nTranscript:\n${text.substring(0, 8000)}`;
 
     try {
       const response = await fetch(this.baseUrl || "https://api.openai.com/v1/chat/completions", {
@@ -130,14 +131,16 @@ export class MockSummarizationProvider implements SummarizationProvider {
 
 /**
  * Factory function to create summarization provider
+ * @param userSettings Optional user-specific OpenAI settings (apiKey, model, prompt)
  */
-export function createSummarizationProvider(): SummarizationProvider {
-  const apiKey = process.env.OPENAI_API_KEY;
-  const model = process.env.OPENAI_MODEL || "gpt-4o-mini";
+export function createSummarizationProvider(userSettings?: { apiKey?: string; model?: string; prompt?: string | null }): SummarizationProvider {
+  const apiKey = userSettings?.apiKey || process.env.OPENAI_API_KEY;
+  const model = userSettings?.model || process.env.OPENAI_MODEL || "gpt-4o-mini";
   const baseUrl = process.env.OPENAI_BASE_URL;
+  const customPrompt = userSettings?.prompt;
 
   if (apiKey) {
-    return new OpenAISummarizationProvider({ apiKey, model, baseUrl });
+    return new OpenAISummarizationProvider({ apiKey, model, baseUrl, customPrompt });
   }
 
   console.warn("No OPENAI_API_KEY found, using mock summarizer");
