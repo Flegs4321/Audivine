@@ -55,6 +55,7 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
   private recognition: SpeechRecognition | null = null;
   private textChunkCallback: ((chunk: TranscriptChunk) => void) | null = null;
   private startTimeMs: number = 0;
+  private lastProcessedIndex: number = 0; // Track the last result index we've processed
 
   constructor() {
     // Initialize SpeechRecognition if available
@@ -78,23 +79,30 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
       if (!this.textChunkCallback) return;
 
       // Process only NEW results (from resultIndex onwards)
-      // This prevents processing the same results multiple times
+      // The Web Speech API sends cumulative results, so we need to track what we've already processed
       let interimTranscript = "";
       let finalTranscript = "";
 
-      for (let i = event.resultIndex; i < event.results.length; i++) {
+      // Start from the last processed index or event.resultIndex, whichever is higher
+      const startIndex = Math.max(event.resultIndex, this.lastProcessedIndex);
+
+      for (let i = startIndex; i < event.results.length; i++) {
         const result = event.results[i];
         const transcript = result[0].transcript;
         
         if (result.isFinal) {
           finalTranscript += transcript + " ";
+          // Update last processed index to include this final result
+          this.lastProcessedIndex = i + 1;
         } else {
-          // Only add interim if it's new (not already in final)
-          interimTranscript += transcript;
+          // Only process interim results if we haven't already processed them
+          if (i >= this.lastProcessedIndex) {
+            interimTranscript += transcript;
+          }
         }
       }
 
-      // Send final results first (if any)
+      // Send final results (if any)
       if (finalTranscript.trim()) {
         const currentMs = Date.now() - this.startTimeMs;
         this.textChunkCallback({
@@ -133,6 +141,7 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
     }
 
     this.startTimeMs = Date.now();
+    this.lastProcessedIndex = 0; // Reset processed index when starting
 
     try {
       this.recognition.start();
