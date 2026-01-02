@@ -32,26 +32,30 @@ export class OpenAISummarizationProvider implements SummarizationProvider {
   ): Promise<SectionSummary> {
     const isSermon = label === "Sermon";
 
-    let basePrompt = isSermon
-      ? `Summarize this ${label.toLowerCase()} section from a church service transcript. Provide:
+    // Use only the custom prompt if provided, otherwise use default
+    let prompt: string;
+    if (this.customPrompt && this.customPrompt.trim().length > 0) {
+      // Use only the custom prompt and transcript
+      // Add minimal JSON structure requirement for parsing
+      prompt = `${this.customPrompt.trim()}\n\nReturn JSON: {"summary": "summary text"${isSermon ? ', "bullets": ["bullet 1", "bullet 2", ...]' : ''}}\n\nTranscript:\n${text.substring(0, 8000)}`;
+    } else {
+      // Fallback to default prompt if no custom prompt
+      let basePrompt = isSermon
+        ? `Summarize this ${label.toLowerCase()} section from a church service transcript. Provide:
 1. A concise summary paragraph (2-4 sentences) capturing the main message
 2. 5-10 bullet points highlighting key points, scriptures, and takeaways
 
 Return JSON: {"summary": "2-4 sentence summary", "bullets": ["bullet 1", "bullet 2", ...]}`
-      : label === "Other"
-      ? `Summarize this section from a church service transcript in 2-4 sentences. Capture the key information, events, or points shared. This section may contain various types of content.
+        : label === "Other"
+        ? `Summarize this section from a church service transcript in 2-4 sentences. Capture the key information, events, or points shared. This section may contain various types of content.
 
 Return JSON: {"summary": "2-4 sentence summary"}`
-      : `Summarize this ${label.toLowerCase()} section from a church service transcript in 2-4 sentences. Capture the key information, events, or points shared.
+        : `Summarize this ${label.toLowerCase()} section from a church service transcript in 2-4 sentences. Capture the key information, events, or points shared.
 
 Return JSON: {"summary": "2-4 sentence summary"}`;
 
-    // Append custom prompt if provided
-    if (this.customPrompt && this.customPrompt.trim().length > 0) {
-      basePrompt += `\n\nAdditional Instructions:\n${this.customPrompt.trim()}`;
+      prompt = `${basePrompt}\n\nTranscript:\n${text.substring(0, 8000)}`;
     }
-
-    const prompt = `${basePrompt}\n\nTranscript:\n${text.substring(0, 8000)}`;
 
     try {
       const response = await fetch(this.baseUrl || "https://api.openai.com/v1/chat/completions", {
@@ -60,12 +64,17 @@ Return JSON: {"summary": "2-4 sentence summary"}`;
           "Content-Type": "application/json",
           "Authorization": `Bearer ${this.apiKey}`,
         },
+        // Use minimal system message when custom prompt is provided
+        const systemMessage = this.customPrompt && this.customPrompt.trim().length > 0
+          ? "You are a helpful assistant. Follow the user's instructions exactly. Always return valid JSON."
+          : "You are a helpful assistant that summarizes church service content. Always return valid JSON.";
+
         body: JSON.stringify({
           model: this.model,
           messages: [
             {
               role: "system",
-              content: "You are a helpful assistant that summarizes church service content. Always return valid JSON.",
+              content: systemMessage,
             },
             {
               role: "user",

@@ -25,6 +25,12 @@ interface Sermon {
   speaker?: string | null;
 }
 
+interface Speaker {
+  id: string;
+  name: string;
+  created_at: string;
+}
+
 export default function SermonsPage() {
   const router = useRouter();
   const { user, signOut, loading: authLoading } = useAuth();
@@ -37,6 +43,8 @@ export default function SermonsPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<Partial<Sermon>>({});
   const [saving, setSaving] = useState(false);
+  const [speakers, setSpeakers] = useState<Speaker[]>([]);
+  const [loadingSpeakers, setLoadingSpeakers] = useState(false);
 
   // Redirect to login if not authenticated
   useEffect(() => {
@@ -49,8 +57,35 @@ export default function SermonsPage() {
   useEffect(() => {
     if (user) {
       loadSermons();
+      loadSpeakers();
     }
   }, [user]);
+
+  const loadSpeakers = async () => {
+    try {
+      setLoadingSpeakers(true);
+      const { supabase } = await import("@/lib/supabase/client");
+      const { data: { session } } = await supabase.auth.getSession();
+      
+      if (!session?.access_token) return;
+
+      const response = await fetch("/api/speakers", {
+        headers: {
+          "Authorization": `Bearer ${session.access_token}`,
+        },
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        setSpeakers(data.speakers || []);
+      }
+    } catch (err) {
+      console.error("Error loading speakers:", err);
+    } finally {
+      setLoadingSpeakers(false);
+    }
+  };
+
 
   const loadSermons = async () => {
     try {
@@ -248,6 +283,8 @@ export default function SermonsPage() {
       sermon_time: sermon.sermon_time || "",
       speaker: sermon.speaker || "",
     });
+    // Refresh speakers list when opening edit form (in case new ones were added in Settings)
+    loadSpeakers();
   };
 
   const handleCancelEdit = () => {
@@ -463,13 +500,23 @@ export default function SermonsPage() {
                             <label className="block text-sm font-medium text-gray-700 mb-1">
                               Speaker
                             </label>
-                            <input
-                              type="text"
+                            <select
                               value={editForm.speaker || ""}
                               onChange={(e) => setEditForm({ ...editForm, speaker: e.target.value })}
                               className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
-                              placeholder="Speaker name"
-                            />
+                            >
+                              <option value="">Select a speaker...</option>
+                              {speakers.map((speaker) => (
+                                <option key={speaker.id} value={speaker.name}>
+                                  {speaker.name}
+                                </option>
+                              ))}
+                            </select>
+                            {speakers.length === 0 && (
+                              <p className="mt-1 text-xs text-gray-500">
+                                No speakers available. <Link href="/settings" className="text-blue-600 hover:underline">Add speakers in Settings</Link>
+                              </p>
+                            )}
                           </div>
                           <div className="flex gap-2">
                             <button

@@ -21,6 +21,12 @@ interface UserSettings {
   openai_prompt?: string | null;
 }
 
+interface Speaker {
+  id: string;
+  name: string;
+  created_at: string;
+}
+
 export default function SettingsPage() {
   const router = useRouter();
   const { user, signOut, loading: authLoading } = useAuth();
@@ -45,6 +51,11 @@ export default function SettingsPage() {
     apiKeyPrefix?: string;
   } | null>(null);
   const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [speakers, setSpeakers] = useState<Speaker[]>([]);
+  const [loadingSpeakers, setLoadingSpeakers] = useState(false);
+  const [newSpeakerName, setNewSpeakerName] = useState("");
+  const [addingSpeaker, setAddingSpeaker] = useState(false);
+  const [deletingSpeakerId, setDeletingSpeakerId] = useState<string | null>(null);
 
   // Redirect to login if not authenticated
   useEffect(() => {
@@ -57,6 +68,7 @@ export default function SettingsPage() {
   useEffect(() => {
     if (user) {
       loadSettings();
+      loadSpeakers();
     }
   }, [user]);
 
@@ -130,6 +142,97 @@ export default function SettingsPage() {
       setError(err instanceof Error ? err.message : "Failed to load settings");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const loadSpeakers = async () => {
+    try {
+      setLoadingSpeakers(true);
+      const { supabase } = await import("@/lib/supabase/client");
+      const { data: { session } } = await supabase.auth.getSession();
+      
+      if (!session?.access_token) return;
+
+      const response = await fetch("/api/speakers", {
+        headers: {
+          "Authorization": `Bearer ${session.access_token}`,
+        },
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        setSpeakers(data.speakers || []);
+      }
+    } catch (err) {
+      console.error("Error loading speakers:", err);
+    } finally {
+      setLoadingSpeakers(false);
+    }
+  };
+
+  const handleAddSpeaker = async () => {
+    if (!newSpeakerName.trim()) return;
+
+    try {
+      setAddingSpeaker(true);
+      const { supabase } = await import("@/lib/supabase/client");
+      const { data: { session } } = await supabase.auth.getSession();
+      
+      if (!session?.access_token) return;
+
+      const response = await fetch("/api/speakers", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${session.access_token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ name: newSpeakerName.trim() }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        setSpeakers([...speakers, data.speaker]);
+        setNewSpeakerName("");
+      } else {
+        const errorData = await response.json().catch(() => ({}));
+        alert(errorData.message || "Failed to add speaker");
+      }
+    } catch (err) {
+      console.error("Error adding speaker:", err);
+      alert("Failed to add speaker");
+    } finally {
+      setAddingSpeaker(false);
+    }
+  };
+
+  const handleDeleteSpeaker = async (speakerId: string) => {
+    if (!confirm("Are you sure you want to delete this speaker?")) return;
+
+    try {
+      setDeletingSpeakerId(speakerId);
+      const { supabase } = await import("@/lib/supabase/client");
+      const { data: { session } } = await supabase.auth.getSession();
+      
+      if (!session?.access_token) return;
+
+      const response = await fetch(`/api/speakers/${speakerId}`, {
+        method: "DELETE",
+        headers: {
+          "Authorization": `Bearer ${session.access_token}`,
+        },
+      });
+
+      if (response.ok) {
+        setSpeakers(speakers.filter(s => s.id !== speakerId));
+      } else {
+        const errorData = await response.json().catch(() => ({}));
+        alert(errorData.message || "Failed to delete speaker");
+      }
+    } catch (err) {
+      console.error("Error deleting speaker:", err);
+      alert("Failed to delete speaker");
+    } finally {
+      setDeletingSpeakerId(null);
     }
   };
 
@@ -375,6 +478,60 @@ export default function SettingsPage() {
       alert("OpenAI settings saved successfully!");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save OpenAI settings");
+      console.error("Save error:", err);
+    }
+  };
+
+  const handleSaveAllSettings = async () => {
+    try {
+      setError(null);
+      const { supabase } = await import("@/lib/supabase/client");
+      const { data: { session } } = await supabase.auth.getSession();
+
+      if (!session?.access_token) {
+        throw new Error("Not authenticated");
+      }
+
+      // Prepare all settings to save
+      const apiKeyToSave = (openaiApiKey && 
+                           openaiApiKey.trim().length > 0 && 
+                           !openaiApiKey.includes("...") &&
+                           openaiApiKey.trim().length > 10)
+        ? openaiApiKey.trim() 
+        : undefined;
+
+      const settingsToSave: any = {
+        church_name: churchName || null,
+        openai_model: openaiModel || "gpt-4o-mini",
+        transcription_method: transcriptionMethod,
+        openai_prompt: openaiPrompt || null,
+      };
+
+      // Only include API key if it's been changed (not masked and not empty)
+      if (apiKeyToSave) {
+        settingsToSave.openai_api_key = apiKeyToSave;
+      }
+
+      const response = await fetch("/api/settings", {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify(settingsToSave),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        const errorMessage = errorData.message || errorData.error || `Failed to save settings (${response.status})`;
+        throw new Error(errorMessage);
+      }
+
+      // Reload settings to get updated values
+      await loadSettings();
+      alert("All settings saved successfully!");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save settings");
       console.error("Save error:", err);
     }
   };
@@ -827,6 +984,71 @@ export default function SettingsPage() {
             </div>
           </div>
 
+          {/* Speakers Section */}
+          <div className="bg-white rounded-lg shadow p-6">
+            <h3 className="text-xl font-semibold mb-4">Speakers/Preachers</h3>
+            <div className="space-y-4">
+              <p className="text-sm text-gray-600 mb-4">
+                Manage your list of speakers. These will be available when editing sermons.
+              </p>
+              
+              {/* Add New Speaker */}
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={newSpeakerName}
+                  onChange={(e) => setNewSpeakerName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      handleAddSpeaker();
+                    }
+                  }}
+                  placeholder="Enter speaker name"
+                  className="flex-1 px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                />
+                <button
+                  onClick={(e) => {
+                    e.preventDefault();
+                    handleAddSpeaker();
+                  }}
+                  disabled={addingSpeaker || !newSpeakerName.trim()}
+                  className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
+                >
+                  {addingSpeaker ? "Adding..." : "Add Speaker"}
+                </button>
+              </div>
+
+              {/* Speakers List */}
+              {loadingSpeakers ? (
+                <p className="text-sm text-gray-500">Loading speakers...</p>
+              ) : speakers.length === 0 ? (
+                <p className="text-sm text-gray-500">No speakers added yet. Add one above to get started.</p>
+              ) : (
+                <div className="space-y-2">
+                  <h4 className="text-sm font-medium text-gray-700">Current Speakers:</h4>
+                  <div className="space-y-2">
+                    {speakers.map((speaker) => (
+                      <div
+                        key={speaker.id}
+                        className="flex items-center justify-between p-3 bg-gray-50 rounded border border-gray-200"
+                      >
+                        <span className="text-sm font-medium text-gray-900">{speaker.name}</span>
+                        <button
+                          onClick={() => handleDeleteSpeaker(speaker.id)}
+                          disabled={deletingSpeakerId === speaker.id}
+                          className="px-3 py-1 text-sm text-red-600 hover:text-red-800 hover:bg-red-50 rounded disabled:opacity-50"
+                        >
+                          {deletingSpeakerId === speaker.id ? "Deleting..." : "Delete"}
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
           {/* Church Name Section */}
           <div className="bg-white rounded-lg shadow p-6">
             <h3 className="text-xl font-semibold mb-4">Church Name</h3>
@@ -848,6 +1070,24 @@ export default function SettingsPage() {
                 className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
               >
                 Save Church Name
+              </button>
+            </div>
+          </div>
+
+          {/* Save All Settings Button */}
+          <div className="bg-white rounded-lg shadow p-6 border-t-4 border-blue-500">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-xl font-semibold mb-2">Save All Settings</h3>
+                <p className="text-sm text-gray-600">
+                  Save all your settings at once, including church name, OpenAI settings, and transcription preferences.
+                </p>
+              </div>
+              <button
+                onClick={handleSaveAllSettings}
+                className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-semibold text-lg shadow-md hover:shadow-lg transition-all"
+              >
+                Save All Settings
               </button>
             </div>
           </div>

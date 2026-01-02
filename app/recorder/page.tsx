@@ -320,37 +320,24 @@ function RecorderPageContent() {
       segmentsRef.current = [];
       transcriptChunksRef.current = [];
       elapsedTimeRef.current = 0;
+      // Reset seen final texts to prevent duplicates from previous recordings
+      seenFinalTextsRef.current.clear();
       
       // Start browser transcription if available and user hasn't selected OpenAI
-      // Check user's transcription method preference
-      let useBrowserTranscription = true;
-      try {
-        const { supabase } = await import("@/lib/supabase/client");
-        const { data: { session } } = await supabase.auth.getSession();
-        if (session?.access_token) {
-          const settingsResponse = await fetch("/api/settings", {
-            headers: {
-              "Authorization": `Bearer ${session.access_token}`,
-            },
-          });
-          if (settingsResponse.ok) {
-            const settingsData = await settingsResponse.json();
-            const transcriptionMethod = settingsData.settings?.transcription_method || "browser";
-            useBrowserTranscription = transcriptionMethod === "browser";
-          }
-        }
-      } catch (err) {
-        console.error("Error checking transcription method:", err);
-        // Default to browser if we can't fetch settings
-      }
-
-      if (useBrowserTranscription && transcription.isAvailable) {
+      // Use the transcriptionMethod state that was already loaded
+      if (transcriptionMethod === "browser" && transcription.isAvailable) {
         try {
+          console.log("[Recorder] Starting browser transcription...");
           await transcription.start();
+          console.log("[Recorder] Browser transcription started successfully");
         } catch (err) {
-          console.error("Failed to start transcription:", err);
+          console.error("[Recorder] Failed to start transcription:", err);
           // Continue recording even if transcription fails
         }
+      } else if (transcriptionMethod === "openai") {
+        console.log("[Recorder] OpenAI transcription selected - skipping live transcription");
+      } else if (!transcription.isAvailable) {
+        console.warn("[Recorder] Transcription not available");
       }
     } catch (err) {
       console.error("Error starting recording:", err);
@@ -466,33 +453,18 @@ function RecorderPageContent() {
       // Wait a moment to ensure previous stop is complete
       await new Promise(resolve => setTimeout(resolve, 150));
       
-      let useBrowserTranscription = true;
-      try {
-        const { supabase } = await import("@/lib/supabase/client");
-        const { data: { session } } = await supabase.auth.getSession();
-        if (session?.access_token) {
-          const settingsResponse = await fetch("/api/settings", {
-            headers: {
-              "Authorization": `Bearer ${session.access_token}`,
-            },
-          });
-          if (settingsResponse.ok) {
-            const settingsData = await settingsResponse.json();
-            const transcriptionMethod = settingsData.settings?.transcription_method || "browser";
-            useBrowserTranscription = transcriptionMethod === "browser";
-          }
-        }
-      } catch (err) {
-        console.error("Error checking transcription method:", err);
-      }
-
-      if (useBrowserTranscription && transcription.isAvailable && !transcription.isActive) {
+      // Use the transcriptionMethod state that was already loaded
+      if (transcriptionMethod === "browser" && transcription.isAvailable && !transcription.isActive) {
         try {
+          console.log("[Recorder] Restarting browser transcription...");
           await transcription.start();
+          console.log("[Recorder] Browser transcription restarted successfully");
         } catch (err) {
-          console.error("Failed to restart transcription:", err);
+          console.error("[Recorder] Failed to restart transcription:", err);
           // Continue recording even if transcription fails
         }
+      } else if (transcriptionMethod === "openai") {
+        console.log("[Recorder] OpenAI transcription selected - skipping live transcription");
       }
 
       setState("recording");
@@ -523,11 +495,13 @@ function RecorderPageContent() {
   };
 
   // Set up transcription callback
+  // Use a ref to persist the seenFinalTexts Set across renders
+  const seenFinalTextsRef = useRef<Set<string>>(new Set());
+
   useEffect(() => {
     if (!transcription.isAvailable) return;
 
     let isMounted = true;
-    const seenFinalTexts = new Set<string>(); // Track final texts we've seen
 
     transcription.onTextChunk((chunk) => {
       if (!isMounted) return;
@@ -540,7 +514,7 @@ function RecorderPageContent() {
             return [...prev.slice(0, -1), chunk];
           }
           // Otherwise add as new interim chunk (but only if we haven't seen this as final)
-          if (!seenFinalTexts.has(chunk.text)) {
+          if (!seenFinalTextsRef.current.has(chunk.text)) {
             return [...prev, chunk];
           }
           return prev;
@@ -548,13 +522,14 @@ function RecorderPageContent() {
         
         // For final chunks, check if we've already added this exact text
         // This prevents duplicates from the Web Speech API
-        if (seenFinalTexts.has(chunk.text)) {
+        if (seenFinalTextsRef.current.has(chunk.text)) {
           // Already have this final chunk, don't add again
+          console.log("[Recorder] Skipping duplicate final chunk:", chunk.text);
           return prev;
         }
         
         // Mark as seen
-        seenFinalTexts.add(chunk.text);
+        seenFinalTextsRef.current.add(chunk.text);
         
         // Remove any interim chunks that might overlap with this final chunk
         // and add the final chunk

@@ -123,7 +123,14 @@ export async function POST(request: NextRequest) {
     }
 
     // Generate comprehensive summary using OpenAI
-    let basePrompt = `You are creating a summary of a church service sermon to send to all church members. 
+    // Use only the custom prompt if provided, otherwise use default
+    let prompt: string;
+    if (userSettings.prompt && userSettings.prompt.trim().length > 0) {
+      // Use only the custom prompt and transcript
+      prompt = `${userSettings.prompt.trim()}\n\nTranscript:\n${fullTranscript.substring(0, 16000)}`;
+    } else {
+      // Fallback to default prompt if no custom prompt
+      prompt = `You are creating a summary of a church service sermon to send to all church members. 
 
 Please create a well-formatted, engaging summary that includes:
 1. A compelling title for the sermon
@@ -133,14 +140,16 @@ Please create a well-formatted, engaging summary that includes:
 5. Scripture references mentioned (if any)
 6. A closing thought or call to action (1-2 sentences)
 
-Make it warm, accessible, and inspiring. Format it in a way that's easy to read and share.`;
+Make it warm, accessible, and inspiring. Format it in a way that's easy to read and share.
 
-    // Append custom prompt if provided
-    if (userSettings.prompt && userSettings.prompt.trim().length > 0) {
-      basePrompt += `\n\nAdditional Instructions:\n${userSettings.prompt.trim()}`;
+Sermon Transcript:
+${fullTranscript.substring(0, 16000)}`;
     }
 
-    const prompt = `${basePrompt}\n\nSermon Transcript:\n${fullTranscript.substring(0, 16000)}`;
+    // Use minimal system message when custom prompt is provided, otherwise use default
+    const systemMessage = userSettings.prompt && userSettings.prompt.trim().length > 0
+      ? "You are a helpful assistant. Follow the user's instructions exactly."
+      : "You are a helpful assistant that creates engaging, well-formatted summaries of church sermons for distribution to members. Always format your response clearly with sections and bullet points.";
 
     const openaiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
@@ -153,7 +162,7 @@ Make it warm, accessible, and inspiring. Format it in a way that's easy to read 
         messages: [
           {
             role: "system",
-            content: "You are a helpful assistant that creates engaging, well-formatted summaries of church sermons for distribution to members. Always format your response clearly with sections and bullet points.",
+            content: systemMessage,
           },
           {
             role: "user",

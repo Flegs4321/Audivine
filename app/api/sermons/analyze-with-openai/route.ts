@@ -41,9 +41,15 @@ async function analyzeWithRetry(
   prompt: string,
   apiKey: string,
   model: string,
+  hasCustomPrompt: boolean,
   retryCount = 0
 ): Promise<any> {
   try {
+    // Use minimal system message when custom prompt is provided
+    const systemMessage = hasCustomPrompt
+      ? "You are a helpful assistant. Follow the user's instructions exactly. Always return valid JSON matching the exact schema requested."
+      : "You are a helpful assistant that analyzes church service transcripts. Always return valid JSON matching the exact schema requested.";
+
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -55,7 +61,7 @@ async function analyzeWithRetry(
         messages: [
           {
             role: 'system',
-            content: 'You are a helpful assistant that analyzes church service transcripts. Always return valid JSON matching the exact schema requested.',
+            content: systemMessage,
           },
           {
             role: 'user',
@@ -76,7 +82,7 @@ async function analyzeWithRetry(
         const delay = RETRY_DELAYS[retryCount] || 8000;
         console.log(`[ANALYZE] Retry ${retryCount + 1}/${MAX_RETRIES} after ${delay}ms`);
         await new Promise(resolve => setTimeout(resolve, delay));
-        return analyzeWithRetry(prompt, apiKey, model, retryCount + 1);
+        return analyzeWithRetry(prompt, apiKey, model, hasCustomPrompt, retryCount + 1);
       }
       
       throw new Error(`OpenAI API error: ${response.status} ${errorText}`);
@@ -94,7 +100,7 @@ async function analyzeWithRetry(
     if (retryCount < MAX_RETRIES && error instanceof Error && error.message.includes('429')) {
       const delay = RETRY_DELAYS[retryCount] || 8000;
       await new Promise(resolve => setTimeout(resolve, delay));
-      return analyzeWithRetry(prompt, apiKey, model, retryCount + 1);
+      return analyzeWithRetry(prompt, apiKey, model, hasCustomPrompt, retryCount + 1);
     }
     throw error;
   }
@@ -206,7 +212,30 @@ export async function POST(request: NextRequest) {
     }
 
     // Create prompt for OpenAI
-    let basePrompt = `Analyze this church service transcript and segment it into three sections: Announcements, Sharing Time, and Sermon.
+    // Use only the custom prompt if provided, otherwise use default
+    let prompt: string;
+    if (userSettings.prompt && userSettings.prompt.trim().length > 0) {
+      // Use only the custom prompt and transcript
+      // Add minimal JSON structure requirement for parsing
+      prompt = `${userSettings.prompt.trim()}\n\nReturn JSON in this exact format:
+{
+  "announcements": {
+    "summary": "2-4 sentence summary",
+    "bullets": ["bullet 1", "bullet 2", ...]
+  },
+  "sharing": {
+    "summary": "2-4 sentence summary",
+    "bullets": ["bullet 1", "bullet 2", ...]
+  },
+  "sermon": {
+    "summary": "2-4 sentence summary",
+    "bullets": ["bullet 1", "bullet 2", ...],
+    "key_points": ["key point 1", "key point 2", ...]
+  }
+}\n\nTranscript:\n${fullTranscript.substring(0, 16000)}`;
+    } else {
+      // Fallback to default prompt if no custom prompt
+      prompt = `Analyze this church service transcript and segment it into three sections: Announcements, Sharing Time, and Sermon.
 
 For each section, provide:
 1. A concise summary (2-4 sentences)
@@ -229,17 +258,15 @@ Return JSON in this exact format:
     "bullets": ["bullet 1", "bullet 2", ...],
     "key_points": ["key point 1", "key point 2", ...]
   }
-}`;
+}
 
-    // Append custom prompt if provided
-    if (userSettings.prompt && userSettings.prompt.trim().length > 0) {
-      basePrompt += `\n\nAdditional Instructions:\n${userSettings.prompt.trim()}`;
+Transcript:
+${fullTranscript.substring(0, 16000)}`;
     }
 
-    const prompt = `${basePrompt}\n\nTranscript:\n${fullTranscript.substring(0, 16000)}`;
-
     // Call OpenAI with retry logic
-    const analysisResult = await analyzeWithRetry(prompt, openaiApiKey, openaiModel);
+    const hasCustomPrompt = !!(userSettings.prompt && userSettings.prompt.trim().length > 0);
+    const analysisResult = await analyzeWithRetry(prompt, openaiApiKey, openaiModel, hasCustomPrompt);
 
     // Validate and format response
     const sections = {
