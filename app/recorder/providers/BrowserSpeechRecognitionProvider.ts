@@ -78,49 +78,39 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
     this.recognition.onresult = (event) => {
       if (!this.textChunkCallback) return;
 
-      // Process only NEW results (from resultIndex onwards)
-      // The Web Speech API sends cumulative results, so we need to track what we've already processed
-      let interimTranscript = "";
-      let finalTranscript = "";
-
-      // Start from the last processed index or event.resultIndex, whichever is higher
-      const startIndex = Math.max(event.resultIndex, this.lastProcessedIndex);
-
-      for (let i = startIndex; i < event.results.length; i++) {
+      // The Web Speech API sends cumulative results - each event contains ALL results from the start
+      // We need to process only NEW results (from resultIndex onwards) and track what we've sent
+      
+      // Process only results starting from resultIndex (where new results begin)
+      for (let i = event.resultIndex; i < event.results.length; i++) {
         const result = event.results[i];
         const transcript = result[0].transcript;
         
+        // Skip empty transcripts
+        if (!transcript.trim()) continue;
+        
         if (result.isFinal) {
-          finalTranscript += transcript + " ";
-          // Update last processed index to include this final result
+          // Send final result immediately
+          const currentMs = Date.now() - this.startTimeMs;
+          this.textChunkCallback({
+            text: transcript.trim(),
+            timestampMs: currentMs,
+            isFinal: true,
+          });
+          // Update last processed index to prevent reprocessing
           this.lastProcessedIndex = i + 1;
         } else {
-          // Only process interim results if we haven't already processed them
-          if (i >= this.lastProcessedIndex) {
-            interimTranscript += transcript;
+          // For interim results, only send if this is the last result (most recent interim)
+          // This prevents sending multiple interim updates for the same text
+          if (i === event.results.length - 1) {
+            const currentMs = Date.now() - this.startTimeMs;
+            this.textChunkCallback({
+              text: transcript.trim(),
+              timestampMs: currentMs,
+              isFinal: false,
+            });
           }
         }
-      }
-
-      // Send final results (if any)
-      if (finalTranscript.trim()) {
-        const currentMs = Date.now() - this.startTimeMs;
-        this.textChunkCallback({
-          text: finalTranscript.trim(),
-          timestampMs: currentMs,
-          isFinal: true,
-        });
-      }
-
-      // Send interim results only if there are no final results in this batch
-      // This prevents showing interim text that's already been finalized
-      if (interimTranscript.trim() && !finalTranscript.trim()) {
-        const currentMs = Date.now() - this.startTimeMs;
-        this.textChunkCallback({
-          text: interimTranscript.trim(),
-          timestampMs: currentMs,
-          isFinal: false,
-        });
       }
     };
 

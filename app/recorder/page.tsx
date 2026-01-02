@@ -438,33 +438,36 @@ function RecorderPageContent() {
     if (!transcription.isAvailable) return;
 
     let isMounted = true;
+    let lastFinalIndex = -1; // Track the last final chunk index to prevent duplicates
 
     transcription.onTextChunk((chunk) => {
       if (!isMounted) return;
 
       setTranscriptChunks((prev) => {
         // If it's an interim result, replace the last interim chunk
-        let updated: TranscriptChunk[];
-        if (!chunk.isFinal && prev.length > 0 && !prev[prev.length - 1].isFinal) {
-          updated = [...prev.slice(0, -1), chunk];
-        } else {
-          // Otherwise, add as new chunk
-          // But first check if we already have this exact chunk to prevent duplicates
-          const isDuplicate = prev.some(
-            (existing) =>
-              existing.text === chunk.text &&
-              existing.timestampMs === chunk.timestampMs &&
-              existing.isFinal === chunk.isFinal
-          );
-          
-          if (isDuplicate) {
-            // Don't add duplicate chunks
-            return prev;
+        if (!chunk.isFinal) {
+          // Replace the last chunk if it's also interim
+          if (prev.length > 0 && !prev[prev.length - 1].isFinal) {
+            return [...prev.slice(0, -1), chunk];
           }
-          
-          updated = [...prev, chunk];
+          // Otherwise add as new interim chunk
+          return [...prev, chunk];
         }
-        // Update ref
+        
+        // For final chunks, check if we've already added this exact text
+        // This prevents duplicates from the Web Speech API
+        const existingIndex = prev.findIndex(
+          (existing) => existing.text === chunk.text && existing.isFinal
+        );
+        
+        if (existingIndex !== -1) {
+          // Already have this final chunk, don't add again
+          return prev;
+        }
+        
+        // Remove any interim chunks that might overlap with this final chunk
+        // and add the final chunk
+        const updated = [...prev.filter(c => c.isFinal || c.text !== chunk.text), chunk];
         transcriptChunksRef.current = updated;
         return updated;
       });
