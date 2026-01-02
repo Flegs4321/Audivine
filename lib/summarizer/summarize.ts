@@ -58,17 +58,17 @@ Return JSON: {"summary": "2-4 sentence summary"}`;
     }
 
     try {
+      // Use minimal system message when custom prompt is provided
+      const systemMessage = this.customPrompt && this.customPrompt.trim().length > 0
+        ? "You are a helpful assistant. Follow the user's instructions exactly. Always return valid JSON."
+        : "You are a helpful assistant that summarizes church service content. Always return valid JSON.";
+
       const response = await fetch(this.baseUrl || "https://api.openai.com/v1/chat/completions", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           "Authorization": `Bearer ${this.apiKey}`,
         },
-        // Use minimal system message when custom prompt is provided
-        const systemMessage = this.customPrompt && this.customPrompt.trim().length > 0
-          ? "You are a helpful assistant. Follow the user's instructions exactly. Always return valid JSON."
-          : "You are a helpful assistant that summarizes church service content. Always return valid JSON.";
-
         body: JSON.stringify({
           model: this.model,
           messages: [
