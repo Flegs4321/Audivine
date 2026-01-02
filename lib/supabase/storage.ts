@@ -77,28 +77,58 @@ export async function uploadRecording(
       data: { publicUrl },
     } = supabase.storage.from("Audivine").getPublicUrl(filePath);
 
-    // Store metadata in the database
+    // Get the current user to associate the recording with them
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
+    
+    if (userError || !user) {
+      console.error("User authentication error:", userError);
+      // Delete the uploaded file since we can't associate it with a user
+      await supabase.storage.from("Audivine").remove([filePath]);
+      return {
+        success: false,
+        error: "You must be logged in to save recordings. Please log in and try again.",
+      };
+    }
+    
+    // Store metadata in the database with user_id
+    const insertData: any = {
+      filename: metadata.filename,
+      file_path: filePath,
+      storage_url: publicUrl,
+      duration: metadata.duration,
+      segments: metadata.segments,
+      transcript_chunks: metadata.transcriptChunks,
+      mime_type: metadata.mimeType,
+      file_size: metadata.fileSize,
+      user_id: user.id, // Always set user_id - required by RLS policy
+    };
+    
+    console.log("[uploadRecording] Inserting recording with user_id:", user.id);
+    
     const { data: dbData, error: dbError } = await supabase
       .from("recordings")
-      .insert({
-        filename: metadata.filename,
-        file_path: filePath,
-        storage_url: publicUrl,
-        duration: metadata.duration,
-        segments: metadata.segments,
-        transcript_chunks: metadata.transcriptChunks,
-        mime_type: metadata.mimeType,
-        file_size: metadata.fileSize,
-      })
+      .insert(insertData)
       .select()
       .single();
 
     if (dbError) {
-      console.warn("Database insert error (storage upload succeeded):", dbError.message);
-      // Storage upload succeeded, but database insert failed
-      // This is non-fatal - the file is still uploaded and accessible
-      // Common causes: RLS policies not configured, or migration not run
+      console.error("Database insert error:", {
+        message: dbError.message,
+        code: dbError.code,
+        details: dbError.details,
+        hint: dbError.hint,
+      });
+      
+      // Delete the uploaded file since database insert failed
+      await supabase.storage.from("Audivine").remove([filePath]);
+      
+      return {
+        success: false,
+        error: `Failed to save recording: ${dbError.message}. Please check your database permissions.`,
+      };
     }
+    
+    console.log("[uploadRecording] Successfully saved recording:", dbData?.id);
 
     return {
       success: true,

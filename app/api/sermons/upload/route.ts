@@ -1,15 +1,101 @@
 /**
  * API route for uploading sermon files
  * POST /api/sermons/upload
+ * Associates uploaded sermons with the authenticated user
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { supabase } from "@/lib/supabase/client";
+import { createClient } from "@supabase/supabase-js";
+import { cookies } from "next/headers";
 
 export const runtime = "nodejs";
 
+async function getSupabaseClient() {
+  const cookieStore = await cookies();
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
+  
+  // Supabase stores cookies with pattern: sb-<project-ref>-auth-token
+  // Extract project ref from URL
+  const urlParts = supabaseUrl.replace('https://', '').replace('http://', '').split('.');
+  const projectRef = urlParts[0] || '';
+  
+  // Get all cookies that might contain the session
+  const allCookies = cookieStore.getAll();
+  let accessToken: string | null = null;
+  let refreshToken: string | null = null;
+  
+  // Look for the auth token cookie
+  for (const cookie of allCookies) {
+    if (cookie.name.includes('auth-token')) {
+      try {
+        const sessionData = JSON.parse(cookie.value);
+        if (sessionData.access_token) {
+          accessToken = sessionData.access_token;
+          refreshToken = sessionData.refresh_token || null;
+          break;
+        }
+      } catch (e) {
+        // Not JSON, continue
+      }
+    }
+  }
+  
+  const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+    },
+  });
+  
+  // Set session if we found tokens
+  if (accessToken) {
+    try {
+      await supabase.auth.setSession({
+        access_token: accessToken,
+        refresh_token: refreshToken || '',
+      });
+    } catch (e) {
+      console.error("Error setting session:", e);
+    }
+  }
+  
+  return supabase;
+}
+
 export async function POST(request: NextRequest) {
   try {
+    // Get token from request
+    const authHeader = request.headers.get("authorization");
+    const token = authHeader?.startsWith("Bearer ") ? authHeader.substring(7) : null;
+    
+    if (!token) {
+      return NextResponse.json(
+        { error: "Unauthorized", message: "You must be logged in to upload sermons" },
+        { status: 401 }
+      );
+    }
+    
+    // Create Supabase client and get user directly from token
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
+    const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
+    const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+      },
+    });
+    
+    // Get user directly from token
+    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+    
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: "Unauthorized", message: "You must be logged in to upload sermons", details: authError?.message },
+        { status: 401 }
+      );
+    }
+    
     const formData = await request.formData();
     const file = formData.get("file") as File;
     const title = (formData.get("title") as string) || file.name;
@@ -56,9 +142,7 @@ export async function POST(request: NextRequest) {
     // For now, we'll set it to 0 and let the user update it later
     const duration = 0;
 
-    // Insert into database
-    // Note: title column may not exist if migration 002 hasn't been run
-    // We'll insert it if the column exists, otherwise just use filename
+    // Insert into database with user_id
     const insertData: any = {
       filename: title,
       file_path: filePath,
@@ -68,11 +152,9 @@ export async function POST(request: NextRequest) {
       transcript_chunks: [],
       mime_type: file.type || "audio/mpeg",
       file_size: file.size,
+      title: title,
+      user_id: user.id, // Associate with the authenticated user
     };
-    
-    // Try to add title if column exists (from migration 002)
-    // If migration hasn't been run, this will just be ignored
-    insertData.title = title;
 
     const { data: dbData, error: dbError } = await supabase
       .from("recordings")

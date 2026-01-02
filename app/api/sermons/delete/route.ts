@@ -1,19 +1,116 @@
 /**
  * API route for deleting sermons
  * DELETE /api/sermons/delete
+ * Only allows users to delete their own sermons
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { supabase } from "@/lib/supabase/client";
+import { createClient } from "@supabase/supabase-js";
+import { cookies } from "next/headers";
 
 export const runtime = "nodejs";
 
+async function getSupabaseClient() {
+  const cookieStore = await cookies();
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
+  
+  // Supabase stores cookies with pattern: sb-<project-ref>-auth-token
+  // Extract project ref from URL
+  const urlParts = supabaseUrl.replace('https://', '').replace('http://', '').split('.');
+  const projectRef = urlParts[0] || '';
+  
+  // Get all cookies that might contain the session
+  const allCookies = cookieStore.getAll();
+  let accessToken: string | null = null;
+  let refreshToken: string | null = null;
+  
+  // Look for the auth token cookie
+  for (const cookie of allCookies) {
+    if (cookie.name.includes('auth-token')) {
+      try {
+        const sessionData = JSON.parse(cookie.value);
+        if (sessionData.access_token) {
+          accessToken = sessionData.access_token;
+          refreshToken = sessionData.refresh_token || null;
+          break;
+        }
+      } catch (e) {
+        // Not JSON, continue
+      }
+    }
+  }
+  
+  const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+    },
+  });
+  
+  // Set session if we found tokens
+  if (accessToken) {
+    try {
+      await supabase.auth.setSession({
+        access_token: accessToken,
+        refresh_token: refreshToken || '',
+      });
+    } catch (e) {
+      console.error("Error setting session:", e);
+    }
+  }
+  
+  return supabase;
+}
+
 export async function DELETE(request: NextRequest) {
   try {
+    // Get token from request
+    const authHeader = request.headers.get("authorization");
+    const token = authHeader?.startsWith("Bearer ") ? authHeader.substring(7) : null;
+    
+    if (!token) {
+      return NextResponse.json(
+        { error: "Unauthorized", message: "You must be logged in to delete sermons" },
+        { status: 401 }
+      );
+    }
+    
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
+    const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
+    
+    if (!supabaseUrl || !supabaseAnonKey) {
+      return NextResponse.json(
+        { error: "Server configuration error", message: "Supabase not configured" },
+        { status: 500 }
+      );
+    }
+    
+    // Create Supabase client to get user and for storage operations
+    const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+      },
+      global: {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      },
+    });
+    
+    // Get user directly from token
+    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+    
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: "Unauthorized", message: "You must be logged in to delete sermons", details: authError?.message },
+        { status: 401 }
+      );
+    }
+    
     const body = await request.json();
     const { id } = body;
-
-    console.log("[DELETE] Request received for ID:", id, "Type:", typeof id);
 
     if (!id) {
       return NextResponse.json(
@@ -22,41 +119,33 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
-    // First, get the recording to find the file path
-    // Try to fetch the recording - log what we're searching for
-    console.log("[DELETE] Searching for recording with ID:", id, "Type:", typeof id);
+    // Fetch the recording using PostgREST API directly (for RLS)
+    const fetchUrl = `${supabaseUrl}/rest/v1/recordings?id=eq.${id}&user_id=eq.${user.id}&select=file_path,id,filename,user_id`;
     
-    // Use .maybeSingle() instead of .single() to handle "not found" more gracefully
-    const { data: recording, error: fetchError } = await supabase
-      .from("recordings")
-      .select("file_path, id, filename")
-      .eq("id", id)
-      .maybeSingle();
-
-    console.log("[DELETE] Fetch result:", { 
-      recording: recording ? { id: recording.id, filename: recording.filename } : null, 
-      error: fetchError ? {
-        message: fetchError.message,
-        code: fetchError.code,
-        details: fetchError.details,
-        hint: fetchError.hint
-      } : null
+    const fetchResponse = await fetch(fetchUrl, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'apikey': supabaseAnonKey,
+        'Content-Type': 'application/json',
+      },
     });
 
-    if (fetchError) {
-      console.error("Error fetching recording:", fetchError);
-      // Check if it's a permissions/RLS issue
-      if (fetchError.code === 'PGRST301' || fetchError.code === '42501' || fetchError.message?.includes('permission') || fetchError.message?.includes('policy')) {
-        return NextResponse.json(
-          { error: "Permission denied", message: "You don't have permission to access this recording. Check RLS policies.", details: fetchError.message, code: fetchError.code },
-          { status: 403 }
-        );
-      }
+    if (!fetchResponse.ok) {
+      const errorText = await fetchResponse.text();
+      console.error("[DELETE] Error fetching recording:", errorText);
       return NextResponse.json(
-        { error: "Failed to fetch recording", message: fetchError.message, code: fetchError.code, details: fetchError.details, hint: fetchError.hint },
-        { status: 500 }
+        { error: "Failed to fetch recording", message: `HTTP ${fetchResponse.status}: ${errorText}` },
+        { status: fetchResponse.status }
       );
     }
+
+    const recordings = await fetchResponse.json();
+    const recording = Array.isArray(recordings) && recordings.length > 0 ? recordings[0] : null;
+
+    console.log("[DELETE] Fetch result:", { 
+      recording: recording ? { id: recording.id, filename: recording.filename } : null
+    });
 
     if (!recording) {
       console.error("Recording not found with ID:", id);
@@ -78,23 +167,31 @@ export async function DELETE(request: NextRequest) {
       }
     }
 
-    // Delete from database
+    // Delete from database using PostgREST API directly (for RLS)
     console.log("[DELETE] Attempting to delete recording with ID:", id);
-    const { error: dbError, data: deleteData } = await supabase
-      .from("recordings")
-      .delete()
-      .eq("id", id)
-      .select(); // Select to see what was deleted
+    const deleteUrl = `${supabaseUrl}/rest/v1/recordings?id=eq.${id}`;
+    
+    const deleteResponse = await fetch(deleteUrl, {
+      method: 'DELETE',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'apikey': supabaseAnonKey,
+        'Content-Type': 'application/json',
+        'Prefer': 'return=representation',
+      },
+    });
 
-    console.log("[DELETE] Delete result:", { deleteData, error: dbError });
-
-    if (dbError) {
-      console.error("Error deleting from database:", dbError);
+    if (!deleteResponse.ok) {
+      const errorText = await deleteResponse.text();
+      console.error("[DELETE] Error deleting from database:", errorText);
       return NextResponse.json(
-        { error: "Failed to delete recording", message: dbError.message, code: dbError.code, details: dbError.details },
-        { status: 500 }
+        { error: "Failed to delete recording", message: `HTTP ${deleteResponse.status}: ${errorText}` },
+        { status: deleteResponse.status }
       );
     }
+
+    const deleteData = await deleteResponse.json();
+    console.log("[DELETE] Delete result:", { deleteData });
 
     return NextResponse.json({ success: true });
   } catch (error) {

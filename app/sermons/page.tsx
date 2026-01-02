@@ -48,25 +48,84 @@ export default function SermonsPage() {
   const loadSermons = async () => {
     try {
       setLoading(true);
+      setError(null);
+      
+      console.log("[Client] Fetching sermons...");
+      
+      // Get the session token from Supabase client
+      const { supabase } = await import("@/lib/supabase/client");
+      const { data: { session } } = await supabase.auth.getSession();
+      
+      const headers: HeadersInit = {
+        "Cache-Control": "no-cache",
+      };
+      
+      // Add authorization header if we have a session
+      if (session?.access_token) {
+        headers["Authorization"] = `Bearer ${session.access_token}`;
+        console.log("[Client] Added auth token to request");
+      } else {
+        console.warn("[Client] No session token available");
+      }
+      
       // Add cache-busting to ensure fresh data
       const response = await fetch("/api/sermons", {
         cache: "no-store",
-        headers: {
-          "Cache-Control": "no-cache",
-        },
+        headers: headers,
       });
+      
+      console.log("[Client] Response status:", response.status, response.statusText);
+      console.log("[Client] Response headers:", Object.fromEntries(response.headers.entries()));
+      
       if (response.ok) {
         const data = await response.json();
-        console.log("Loaded sermons:", data.sermons?.length || 0);
+        console.log("[Client] Loaded sermons:", data.sermons?.length || 0);
         setSermons(data.sermons || []);
       } else {
-        const errorData = await response.json().catch(() => ({}));
-        console.error("Failed to load sermons:", errorData);
-        setError(errorData.error || "Failed to load sermons");
+        // Try to get error text
+        let errorText = "";
+        try {
+          errorText = await response.text();
+          console.log("[Client] Error response body:", errorText);
+        } catch (e) {
+          console.error("[Client] Could not read error response:", e);
+          errorText = `HTTP ${response.status}: ${response.statusText}`;
+        }
+        
+        let errorData: any = {};
+        if (errorText) {
+          try {
+            errorData = JSON.parse(errorText);
+          } catch (e) {
+            // Not JSON, use as plain text
+            errorData = { error: errorText, message: errorText };
+          }
+        } else {
+          errorData = { 
+            error: `HTTP ${response.status}: ${response.statusText}`,
+            message: `Server returned ${response.status} ${response.statusText}`
+          };
+        }
+        
+        // Log each piece separately for better visibility
+        console.error("[Client] HTTP Status:", response.status);
+        console.error("[Client] Status Text:", response.statusText);
+        console.error("[Client] Error Text:", errorText);
+        console.error("[Client] Error Data:", errorData);
+        console.error("[Client] Full error object:", {
+          status: response.status,
+          statusText: response.statusText,
+          errorText: errorText,
+          errorData: errorData
+        });
+        
+        const errorMessage = errorData.error || errorData.message || `Failed to load sermons (HTTP ${response.status})`;
+        console.error("[Client] Setting error message:", errorMessage);
+        setError(errorMessage);
       }
     } catch (err) {
-      console.error("Failed to load sermons:", err);
-      setError("Failed to load sermons. Please check your Supabase connection.");
+      console.error("[Client] Exception loading sermons:", err);
+      setError(err instanceof Error ? err.message : "Failed to load sermons. Please check your Supabase connection.");
     } finally {
       setLoading(false);
     }
@@ -118,10 +177,23 @@ export default function SermonsPage() {
     setError(null);
 
     try {
+      // Get the session token from Supabase client
+      const { supabase } = await import("@/lib/supabase/client");
+      const { data: { session } } = await supabase.auth.getSession();
+      
+      const headers: HeadersInit = {
+        "Content-Type": "application/json",
+      };
+      
+      // Add authorization header if we have a session
+      if (session?.access_token) {
+        headers["Authorization"] = `Bearer ${session.access_token}`;
+      }
+      
       console.log("Sending delete request to /api/sermons/delete with ID:", id);
       const response = await fetch("/api/sermons/delete", {
         method: "DELETE",
-        headers: { "Content-Type": "application/json" },
+        headers: headers,
         body: JSON.stringify({ id }),
       });
 
@@ -140,6 +212,8 @@ export default function SermonsPage() {
           return; // Exit early, no error shown
         }
         
+        // Reload sermons to restore the optimistic update if delete failed
+        await loadSermons();
         throw new Error(errorMessage);
       }
 
@@ -201,7 +275,7 @@ export default function SermonsPage() {
               href="/recorder"
               className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
             >
-              Recordings
+              Record
             </Link>
             <Link
               href="/sermons"

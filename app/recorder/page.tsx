@@ -566,9 +566,17 @@ function RecorderPageContent() {
       if (result.success && result.url) {
         setUploadStatus("success");
         setUploadedUrl(result.url);
+        console.log("[Recorder] Upload successful, recording ID:", result.recordingId);
+        
+        // Refresh sermons list after successful upload
+        // Navigate to sermons page to see the new recording
+        setTimeout(() => {
+          router.push("/sermons");
+        }, 1000);
       } else {
         setUploadStatus("error");
         setUploadError(result.error || "Upload failed");
+        console.error("[Recorder] Upload failed:", result.error);
       }
     } catch (err) {
       setUploadStatus("error");
@@ -610,7 +618,7 @@ function RecorderPageContent() {
               href="/recorder"
               className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
             >
-              Recordings
+              Record
             </Link>
             <Link
               href="/sermons"
