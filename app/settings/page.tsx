@@ -26,6 +26,8 @@ export default function SettingsPage() {
   const [error, setError] = useState<string | null>(null);
   const [logoFile, setLogoFile] = useState<File | null>(null);
   const [churchName, setChurchName] = useState("");
+  const [testingOpenAI, setTestingOpenAI] = useState(false);
+  const [openAITestResult, setOpenAITestResult] = useState<{ connected: boolean; message?: string; error?: string } | null>(null);
 
   // Redirect to login if not authenticated
   useEffect(() => {
@@ -158,6 +160,25 @@ export default function SettingsPage() {
       console.error("Upload error:", err);
     } finally {
       setUploading(false);
+    }
+  };
+
+  const testOpenAIConnection = async () => {
+    setTestingOpenAI(true);
+    setOpenAITestResult(null);
+    setError(null);
+
+    try {
+      const response = await fetch("/api/test-openai");
+      const data = await response.json();
+      setOpenAITestResult(data);
+    } catch (err) {
+      setOpenAITestResult({
+        connected: false,
+        error: err instanceof Error ? err.message : "Failed to test connection",
+      });
+    } finally {
+      setTestingOpenAI(false);
     }
   };
 
@@ -312,6 +333,49 @@ export default function SettingsPage() {
               >
                 {uploading ? "Uploading..." : "Upload Logo"}
               </button>
+            </div>
+          </div>
+
+          {/* OpenAI Connection Test Section */}
+          <div className="bg-white rounded-lg shadow p-6">
+            <h3 className="text-xl font-semibold mb-4">OpenAI Connection</h3>
+            <div className="space-y-4">
+              <p className="text-sm text-gray-600">
+                Test your OpenAI API connection to verify transcription and summarization will work.
+              </p>
+              <button
+                onClick={testOpenAIConnection}
+                disabled={testingOpenAI}
+                className="px-6 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {testingOpenAI ? "Testing..." : "Test OpenAI Connection"}
+              </button>
+              
+              {openAITestResult && (
+                <div className={`mt-4 p-4 rounded-lg ${
+                  openAITestResult.connected 
+                    ? "bg-green-50 border border-green-200" 
+                    : "bg-red-50 border border-red-200"
+                }`}>
+                  <p className={`font-semibold ${
+                    openAITestResult.connected ? "text-green-800" : "text-red-800"
+                  }`}>
+                    {openAITestResult.connected ? "✅ Connected!" : "❌ Not Connected"}
+                  </p>
+                  {openAITestResult.message && (
+                    <p className={`text-sm mt-2 ${
+                      openAITestResult.connected ? "text-green-700" : "text-red-700"
+                    }`}>
+                      {openAITestResult.message}
+                    </p>
+                  )}
+                  {openAITestResult.error && (
+                    <p className="text-sm mt-2 text-red-700">
+                      Error: {openAITestResult.error}
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
           </div>
 
