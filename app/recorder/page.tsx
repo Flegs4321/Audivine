@@ -229,48 +229,27 @@ function RecorderPageContent() {
 
       // Collect audio chunks
       mediaRecorder.ondataavailable = (event) => {
-        // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/321257dd-001e-4325-9924-8b2713a810bc',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'recorder/page.tsx:169',message:'ondataavailable fired',data:{chunkSize:event.data.size,chunksCount:audioChunksRef.current.length,state:mediaRecorder.state},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
-        // #endregion
         if (event.data.size > 0) {
           audioChunksRef.current.push(event.data);
-          // #region agent log
-          fetch('http://127.0.0.1:7242/ingest/321257dd-001e-4325-9924-8b2713a810bc',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'recorder/page.tsx:173',message:'chunk added',data:{chunkSize:event.data.size,totalChunks:audioChunksRef.current.length,totalSize:audioChunksRef.current.reduce((sum,chunk)=>sum+chunk.size,0)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
-          // #endregion
         } else {
-          // #region agent log
-          fetch('http://127.0.0.1:7242/ingest/321257dd-001e-4325-9924-8b2713a810bc',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'recorder/page.tsx:176',message:'ondataavailable with zero size',data:{state:mediaRecorder.state},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
-          // #endregion
         }
       };
 
       // Handle when recording stops
       mediaRecorder.onstop = async () => {
-        // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/321257dd-001e-4325-9924-8b2713a810bc',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'recorder/page.tsx:175',message:'onstop fired',data:{chunksCount:audioChunksRef.current.length,totalSize:audioChunksRef.current.reduce((sum,chunk)=>sum+chunk.size,0),mimeType:selectedMimeType},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-        // #endregion
         // Create blob from collected chunks
         if (audioChunksRef.current.length > 0) {
           const totalSize = audioChunksRef.current.reduce((sum, chunk) => sum + chunk.size, 0);
           const blob = new Blob(audioChunksRef.current, { type: selectedMimeType });
-          // #region agent log
-          fetch('http://127.0.0.1:7242/ingest/321257dd-001e-4325-9924-8b2713a810bc',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'recorder/page.tsx:180',message:'blob created',data:{blobSize:blob.size,blobType:blob.type,chunksCount:audioChunksRef.current.length,expectedSize:totalSize},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
-          // #endregion
           setAudioBlob(blob);
 
           // Create object URL for audio playback
           const url = URL.createObjectURL(blob);
-          // #region agent log
-          fetch('http://127.0.0.1:7242/ingest/321257dd-001e-4325-9924-8b2713a810bc',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'recorder/page.tsx:185',message:'audio URL created',data:{url:url.substring(0,50)+'...',blobSize:blob.size},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
-          // #endregion
           setAudioUrl(url);
 
           // Upload to Supabase
           handleUploadToSupabase(blob, selectedMimeType);
         } else {
-          // #region agent log
-          fetch('http://127.0.0.1:7242/ingest/321257dd-001e-4325-9924-8b2713a810bc',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'recorder/page.tsx:191',message:'no chunks available on stop',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
-          // #endregion
         }
         mediaRecorderRef.current = null;
       };
@@ -283,13 +262,7 @@ function RecorderPageContent() {
       };
 
       // Start recording
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/321257dd-001e-4325-9924-8b2713a810bc',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'recorder/page.tsx:199',message:'starting MediaRecorder',data:{mimeType:selectedMimeType,state:mediaRecorder.state},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'F'})}).catch(()=>{});
-      // #endregion
       mediaRecorder.start(); // Mp3MediaRecorder doesn't support timeslice - dataavailable fires only when stopped
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/321257dd-001e-4325-9924-8b2713a810bc',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'recorder/page.tsx:201',message:'MediaRecorder started',data:{state:mediaRecorder.state},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'F'})}).catch(()=>{});
-      // #endregion
 
       setState("recording");
       setElapsedTime(0);
@@ -354,9 +327,6 @@ function RecorderPageContent() {
 
       // Stop MediaRecorder if it's active
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
-        // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/321257dd-001e-4325-9924-8b2713a810bc',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'recorder/page.tsx:263',message:'stopping MediaRecorder',data:{state:mediaRecorderRef.current.state,chunksCount:audioChunksRef.current.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-        // #endregion
         
         const recorder = mediaRecorderRef.current;
         const chunksBeforeStop = audioChunksRef.current.length;
@@ -364,9 +334,6 @@ function RecorderPageContent() {
         // Stop the recorder
         // Note: Mp3MediaRecorder doesn't support requestData() - dataavailable fires automatically on stop
         recorder.stop();
-        // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/321257dd-001e-4325-9924-8b2713a810bc',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'recorder/page.tsx:275',message:'stop() called',data:{finalChunksCount:audioChunksRef.current.length,chunksBefore:chunksBeforeStop},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-        // #endregion
       }
 
       // Stop all tracks in the media stream
@@ -799,9 +766,6 @@ function RecorderPageContent() {
                     onLoadedMetadata={(e) => {
                       const audioEl = e.target as HTMLAudioElement;
                       setAudioDuration(audioEl.duration);
-                      // #region agent log
-                      fetch('http://127.0.0.1:7242/ingest/321257dd-001e-4325-9924-8b2713a810bc',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'recorder/page.tsx:517',message:'audio loaded metadata',data:{duration:audioEl.duration,readyState:audioEl.readyState},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
-                      // #endregion
                     }}
                     onError={(e) => {
                       // #region agent log
