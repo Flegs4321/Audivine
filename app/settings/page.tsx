@@ -25,6 +25,7 @@ interface Speaker {
   id: string;
   name: string;
   created_at: string;
+  tagged?: boolean;
 }
 
 export default function SettingsPage() {
@@ -56,6 +57,10 @@ export default function SettingsPage() {
   const [newSpeakerName, setNewSpeakerName] = useState("");
   const [addingSpeaker, setAddingSpeaker] = useState(false);
   const [deletingSpeakerId, setDeletingSpeakerId] = useState<string | null>(null);
+  const [importingSpeakers, setImportingSpeakers] = useState(false);
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [taggedFeatureAvailable, setTaggedFeatureAvailable] = useState<boolean | null>(null);
+  const [selectedSpeakers, setSelectedSpeakers] = useState<Set<string>>(new Set());
 
   // Redirect to login if not authenticated
   useEffect(() => {
@@ -151,7 +156,10 @@ export default function SettingsPage() {
       const { supabase } = await import("@/lib/supabase/client");
       const { data: { session } } = await supabase.auth.getSession();
       
-      if (!session?.access_token) return;
+      if (!session?.access_token) {
+        console.warn("[loadSpeakers] No session token");
+        return;
+      }
 
       const response = await fetch("/api/speakers", {
         headers: {
@@ -161,10 +169,19 @@ export default function SettingsPage() {
 
       if (response.ok) {
         const data = await response.json();
-        setSpeakers(data.speakers || []);
+        console.log("[loadSpeakers] Response data:", data);
+        const speakersList = data.speakers || data.speaker || [];
+        console.log("[loadSpeakers] Setting speakers:", speakersList);
+        setSpeakers(Array.isArray(speakersList) ? speakersList : []);
+      } else {
+        const errorText = await response.text();
+        console.error("[loadSpeakers] API error:", response.status, errorText);
+        const errorData = JSON.parse(errorText).catch(() => ({}));
+        alert(`Failed to load speakers: ${errorData.message || errorText}`);
       }
     } catch (err) {
       console.error("Error loading speakers:", err);
+      alert(`Error loading speakers: ${err instanceof Error ? err.message : "Unknown error"}`);
     } finally {
       setLoadingSpeakers(false);
     }
@@ -206,7 +223,10 @@ export default function SettingsPage() {
   };
 
   const handleDeleteSpeaker = async (speakerId: string) => {
-    if (!confirm("Are you sure you want to delete this speaker?")) return;
+    const speaker = speakers.find(s => s.id === speakerId);
+    const speakerName = speaker?.name || "this speaker";
+    
+    if (!confirm(`Are you sure you want to delete "${speakerName}"? This action cannot be undone.`)) return;
 
     try {
       setDeletingSpeakerId(speakerId);
@@ -224,6 +244,12 @@ export default function SettingsPage() {
 
       if (response.ok) {
         setSpeakers(speakers.filter(s => s.id !== speakerId));
+        // Remove from selected set if it was selected
+        setSelectedSpeakers(prev => {
+          const newSet = new Set(prev);
+          newSet.delete(speakerId);
+          return newSet;
+        });
       } else {
         const errorData = await response.json().catch(() => ({}));
         alert(errorData.message || "Failed to delete speaker");
@@ -233,6 +259,325 @@ export default function SettingsPage() {
       alert("Failed to delete speaker");
     } finally {
       setDeletingSpeakerId(null);
+    }
+  };
+
+  const handleSelectAll = () => {
+    if (selectedSpeakers.size === speakers.length) {
+      // Deselect all
+      setSelectedSpeakers(new Set());
+    } else {
+      // Select all
+      setSelectedSpeakers(new Set(speakers.map(s => s.id)));
+    }
+  };
+
+  const handleToggleSpeakerSelection = (speakerId: string) => {
+    setSelectedSpeakers(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(speakerId)) {
+        newSet.delete(speakerId);
+      } else {
+        newSet.add(speakerId);
+      }
+      return newSet;
+    });
+  };
+
+  const handleDeleteSelected = async () => {
+    if (selectedSpeakers.size === 0) return;
+
+    const selectedNames = speakers
+      .filter(s => selectedSpeakers.has(s.id))
+      .map(s => s.name)
+      .slice(0, 10);
+    const moreText = selectedSpeakers.size > 10 ? ` and ${selectedSpeakers.size - 10} more` : "";
+    
+    const confirmMessage = `Are you sure you want to delete ${selectedSpeakers.size} speaker(s)?\n\n${selectedNames.join(", ")}${moreText}\n\nThis action cannot be undone.`;
+    
+    if (!confirm(confirmMessage)) return;
+
+    try {
+      const { supabase } = await import("@/lib/supabase/client");
+      const { data: { session } } = await supabase.auth.getSession();
+      
+      if (!session?.access_token) {
+        throw new Error("Not authenticated");
+      }
+
+      let deleted = 0;
+      let errors: string[] = [];
+
+      // Delete all selected speakers
+      for (const speakerId of selectedSpeakers) {
+        try {
+          const response = await fetch(`/api/speakers/${speakerId}`, {
+            method: "DELETE",
+            headers: {
+              "Authorization": `Bearer ${session.access_token}`,
+            },
+          });
+
+          if (response.ok) {
+            deleted++;
+          } else {
+            const errorData = await response.json().catch(() => ({}));
+            const speaker = speakers.find(s => s.id === speakerId);
+            errors.push(`${speaker?.name || speakerId}: ${errorData.message || "Failed to delete"}`);
+          }
+        } catch (err) {
+          const speaker = speakers.find(s => s.id === speakerId);
+          errors.push(`${speaker?.name || speakerId}: ${err instanceof Error ? err.message : "Unknown error"}`);
+        }
+      }
+
+      // Reload speakers list
+      await loadSpeakers();
+      
+      // Clear selection
+      setSelectedSpeakers(new Set());
+
+      // Show results
+      let message = `Deleted ${deleted} speaker(s)`;
+      if (errors.length > 0) {
+        message += `\n\nErrors: ${errors.length}`;
+        console.error("Delete errors:", errors);
+      }
+      alert(message);
+    } catch (err) {
+      console.error("Error deleting selected speakers:", err);
+      alert("Failed to delete selected speakers");
+    }
+  };
+
+  const handleToggleTagged = async (speakerId: string, currentlyTagged: boolean) => {
+    if (!user) return;
+
+    try {
+      const { supabase } = await import("@/lib/supabase/client");
+      const { data: { session } } = await supabase.auth.getSession();
+
+      if (!session?.access_token) {
+        throw new Error("Not authenticated");
+      }
+
+      const response = await fetch(`/api/speakers/${speakerId}`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({ tagged: !currentlyTagged }),
+      });
+
+      if (response.ok) {
+        // Update local state
+        setSpeakers(speakers.map(s => 
+          s.id === speakerId ? { ...s, tagged: !currentlyTagged } : s
+        ));
+      } else {
+        const errorData = await response.json().catch(() => ({}));
+        const errorMessage = errorData.message || errorData.error || "Failed to update speaker";
+        
+        // If the error is about tagged column not existing, update state and show helpful message
+        if (errorMessage.includes("tagged") || errorMessage.includes("migration")) {
+          setTaggedFeatureAvailable(false);
+          alert("Tagging feature requires a database migration. Please apply migration 016_add_speaker_tagged_field.sql in your Supabase dashboard to enable this feature.");
+        } else {
+          alert(errorMessage);
+        }
+      }
+    } catch (err) {
+      console.error("Error toggling tagged status:", err);
+      alert("Failed to update speaker");
+    }
+  };
+
+  const handleImportExcel = async () => {
+    if (!importFile || !user) return;
+
+    try {
+      setImportingSpeakers(true);
+      setError(null);
+
+      const arrayBuffer = await importFile.arrayBuffer();
+      const fileExtension = importFile.name.split('.').pop()?.toLowerCase();
+      
+      let names: string[] = [];
+
+      if (fileExtension === 'xlsx' || fileExtension === 'xls') {
+        // Handle Excel files
+        const XLSX = await import("xlsx");
+        const workbook = XLSX.read(arrayBuffer, { type: "array" });
+        const firstSheetName = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[firstSheetName];
+        const data = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: "" });
+        
+        // Extract names from the first column
+        for (let i = 0; i < data.length; i++) {
+          const row = data[i] as any[];
+          if (row && row[0] && typeof row[0] === "string" && row[0].trim()) {
+            const name = row[0].trim();
+            if (!["name", "speaker", "preacher", "NAME", "SPEAKER", "PREACHER"].includes(name.toLowerCase())) {
+              names.push(name);
+            }
+          }
+        }
+      } else if (fileExtension === 'docx') {
+        // Handle Word documents
+        const mammoth = await import("mammoth");
+        const result = await mammoth.extractRawText({ arrayBuffer });
+        const text = result.value;
+        
+        // Split by lines and extract names
+        const lines = text.split(/\r?\n/).map(line => line.trim()).filter(line => line.length > 0);
+        
+        for (const line of lines) {
+          // Skip header-like lines
+          if (!["name", "speaker", "preacher", "NAME", "SPEAKER", "PREACHER"].includes(line.toLowerCase())) {
+            // If line contains multiple names separated by commas, split them
+            if (line.includes(',')) {
+              const splitNames = line.split(',').map(n => n.trim()).filter(n => n.length > 0);
+              names.push(...splitNames);
+            } else {
+              names.push(line);
+            }
+          }
+        }
+      } else {
+        alert("Unsupported file type. Please upload an Excel file (.xlsx, .xls) or Word document (.docx)");
+        setImportFile(null);
+        setImportingSpeakers(false);
+        return;
+      }
+
+      if (names.length === 0) {
+        alert("No speaker names found in the file. Please ensure the file contains speaker names (one per line for Word docs, or in the first column for Excel).");
+        setImportFile(null);
+        return;
+      }
+
+      // Get session token
+      const { supabase } = await import("@/lib/supabase/client");
+      const { data: { session } } = await supabase.auth.getSession();
+
+      if (!session?.access_token) {
+        throw new Error("Not authenticated");
+      }
+
+      // First, check which names already exist
+      const existingSpeakers = speakers.map(s => s.name.toLowerCase());
+      const duplicates: string[] = [];
+      const newNames: string[] = [];
+
+      for (const name of names) {
+        if (existingSpeakers.includes(name.toLowerCase())) {
+          duplicates.push(name);
+        } else {
+          newNames.push(name);
+        }
+      }
+
+      // Ask user about duplicates
+      let overwriteDuplicates = false;
+      if (duplicates.length > 0) {
+        const duplicateList = duplicates.slice(0, 10).join(", ");
+        const moreText = duplicates.length > 10 ? ` and ${duplicates.length - 10} more` : "";
+        const userChoice = confirm(
+          `${duplicates.length} name(s) already exist in your speakers list:\n\n${duplicateList}${moreText}\n\nDo you want to overwrite these existing names?\n\nClick OK to overwrite, Cancel to skip them.`
+        );
+        overwriteDuplicates = userChoice;
+      }
+
+      // Add speakers
+      let added = 0;
+      let skipped = 0;
+      let overwritten = 0;
+      const errors: string[] = [];
+
+      // Process new names first
+      for (const name of newNames) {
+        try {
+          const response = await fetch("/api/speakers", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${session.access_token}`,
+            },
+            body: JSON.stringify({ name }),
+          });
+
+          if (response.ok) {
+            added++;
+          } else {
+            const errorData = await response.json().catch(() => ({}));
+            errors.push(`${name}: ${errorData.message || "Failed to add"}`);
+          }
+        } catch (err) {
+          errors.push(`${name}: ${err instanceof Error ? err.message : "Unknown error"}`);
+        }
+      }
+
+      // Process duplicates based on user choice
+      if (overwriteDuplicates && duplicates.length > 0) {
+        // Update existing speakers with the new name (in case of case changes or slight variations)
+        for (const duplicateName of duplicates) {
+          const existingSpeaker = speakers.find(s => s.name.toLowerCase() === duplicateName.toLowerCase());
+          if (existingSpeaker) {
+            try {
+              const response = await fetch(`/api/speakers/${existingSpeaker.id}`, {
+                method: "PATCH",
+                headers: {
+                  "Content-Type": "application/json",
+                  "Authorization": `Bearer ${session.access_token}`,
+                },
+                body: JSON.stringify({ name: duplicateName }),
+              });
+
+              if (response.ok) {
+                overwritten++;
+              } else {
+                const errorData = await response.json().catch(() => ({}));
+                skipped++;
+                errors.push(`${duplicateName}: ${errorData.message || "Failed to overwrite"}`);
+              }
+            } catch (err) {
+              skipped++;
+              errors.push(`${duplicateName}: ${err instanceof Error ? err.message : "Unknown error"}`);
+            }
+          } else {
+            // Speaker not found (shouldn't happen, but handle it)
+            skipped++;
+          }
+        }
+      } else if (duplicates.length > 0) {
+        skipped = duplicates.length;
+      }
+
+      // Reload speakers list
+      await loadSpeakers();
+
+      // Show results
+      let message = `Import complete!\n\nAdded: ${added}`;
+      if (overwritten > 0) {
+        message += `\nOverwritten: ${overwritten}`;
+      }
+      if (skipped > 0) {
+        message += `\nSkipped: ${skipped}`;
+      }
+      if (errors.length > 0) {
+        message += `\nErrors: ${errors.length}`;
+        console.error("Import errors:", errors);
+      }
+      alert(message);
+
+      setImportFile(null);
+    } catch (err) {
+      console.error("Import error:", err);
+      setError(err instanceof Error ? err.message : "Failed to import speakers");
+      alert(err instanceof Error ? err.message : "Failed to import speakers. Make sure the file is a valid Excel file (.xlsx or .xls) or Word document (.docx)");
+    } finally {
+      setImportingSpeakers(false);
     }
   };
 
@@ -1019,21 +1364,130 @@ export default function SettingsPage() {
                 </button>
               </div>
 
+              {/* Excel/Word Import */}
+              <div className="mt-4 pt-4 border-t border-gray-200">
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Import Speakers from File
+                </label>
+                <p className="text-xs text-gray-500 mb-3">
+                  Upload an Excel file (.xlsx or .xls) with speaker names in the first column, or a Word document (.docx) with one name per line. Duplicate names will prompt you to overwrite or skip.
+                </p>
+                <div className="flex gap-2">
+                  <input
+                    type="file"
+                    accept=".xlsx,.xls,.docx"
+                    onChange={(e) => setImportFile(e.target.files?.[0] || null)}
+                    className="flex-1 px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 text-sm"
+                    disabled={importingSpeakers}
+                  />
+                  <button
+                    onClick={handleImportExcel}
+                    disabled={importingSpeakers || !importFile}
+                    className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50"
+                  >
+                    {importingSpeakers ? "Importing..." : "Import"}
+                  </button>
+                </div>
+                {importFile && (
+                  <p className="text-xs text-gray-600 mt-2">
+                    Selected: {importFile.name}
+                  </p>
+                )}
+              </div>
+
               {/* Speakers List */}
               {loadingSpeakers ? (
                 <p className="text-sm text-gray-500">Loading speakers...</p>
               ) : speakers.length === 0 ? (
-                <p className="text-sm text-gray-500">No speakers added yet. Add one above to get started.</p>
+                <div className="space-y-2">
+                  <p className="text-sm text-gray-500">No speakers added yet. Add one above to get started.</p>
+                  <button
+                    onClick={loadSpeakers}
+                    className="text-xs text-blue-600 hover:text-blue-800 underline"
+                  >
+                    Refresh List
+                  </button>
+                </div>
               ) : (
                 <div className="space-y-2">
-                  <h4 className="text-sm font-medium text-gray-700">Current Speakers:</h4>
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-sm font-medium text-gray-700">Current Speakers ({speakers.length}):</h4>
+                    <button
+                      onClick={loadSpeakers}
+                      className="text-xs text-blue-600 hover:text-blue-800 underline"
+                    >
+                      Refresh
+                    </button>
+                  </div>
+                  
+                  {/* Select All and Delete Selected */}
+                  <div className="flex items-center justify-between pb-2 border-b border-gray-200">
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={selectedSpeakers.size === speakers.length && speakers.length > 0}
+                        onChange={handleSelectAll}
+                        className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                      />
+                      <label className="text-sm text-gray-700">
+                        Select All ({selectedSpeakers.size} selected)
+                      </label>
+                    </div>
+                    {selectedSpeakers.size > 0 && (
+                      <button
+                        onClick={handleDeleteSelected}
+                        className="px-3 py-1 text-sm text-red-600 hover:text-red-800 hover:bg-red-50 rounded border border-red-200"
+                      >
+                        Delete Selected ({selectedSpeakers.size})
+                      </button>
+                    )}
+                  </div>
+
                   <div className="space-y-2">
                     {speakers.map((speaker) => (
                       <div
                         key={speaker.id}
-                        className="flex items-center justify-between p-3 bg-gray-50 rounded border border-gray-200"
+                        className={`flex items-center justify-between p-3 rounded border ${
+                          selectedSpeakers.has(speaker.id)
+                            ? "bg-yellow-50 border-yellow-300"
+                            : speaker.tagged 
+                            ? "bg-blue-50 border-blue-300" 
+                            : "bg-gray-50 border-gray-200"
+                        }`}
                       >
-                        <span className="text-sm font-medium text-gray-900">{speaker.name}</span>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={selectedSpeakers.has(speaker.id)}
+                            onChange={() => handleToggleSpeakerSelection(speaker.id)}
+                            className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                          />
+                          <button
+                            onClick={() => handleToggleTagged(speaker.id, speaker.tagged || false)}
+                            disabled={taggedFeatureAvailable === false}
+                            className={`px-2 py-1 text-sm rounded transition-colors ${
+                              taggedFeatureAvailable === false
+                                ? "bg-gray-100 text-gray-400 cursor-not-allowed"
+                                : speaker.tagged
+                                ? "bg-blue-600 text-white hover:bg-blue-700"
+                                : "bg-gray-200 text-gray-600 hover:bg-gray-300"
+                            }`}
+                            title={
+                              taggedFeatureAvailable === false
+                                ? "Tagging requires database migration. Apply migration 016_add_speaker_tagged_field.sql"
+                                : speaker.tagged
+                                ? "Tagged - appears at top during sharing"
+                                : "Tag for easy access during sharing"
+                            }
+                          >
+                            {speaker.tagged ? "⭐ Tagged" : "Tag"}
+                          </button>
+                          <span className={`text-sm font-medium ${
+                            speaker.tagged ? "text-blue-900" : "text-gray-900"
+                          }`}>
+                            {speaker.name}
+                          </span>
+                        </div>
                         <button
                           onClick={() => handleDeleteSpeaker(speaker.id)}
                           disabled={deletingSpeakerId === speaker.id}

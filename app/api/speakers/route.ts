@@ -53,8 +53,9 @@ export async function GET(request: NextRequest) {
     }
 
     // Fetch speakers using PostgREST API (more reliable for RLS)
-    const fetchUrl = `${supabaseUrl}/rest/v1/speakers?user_id=eq.${user.id}&select=id,name,created_at&order=name.asc`;
-    const fetchResponse = await fetch(fetchUrl, {
+    // Try with tagged column first, fallback to without if column doesn't exist
+    let fetchUrl = `${supabaseUrl}/rest/v1/speakers?user_id=eq.${user.id}&select=id,name,created_at,tagged&order=tagged.desc.nullslast,name.asc`;
+    let fetchResponse = await fetch(fetchUrl, {
       method: "GET",
       headers: {
         Authorization: `Bearer ${token}`,
@@ -62,6 +63,30 @@ export async function GET(request: NextRequest) {
         "Content-Type": "application/json",
       },
     });
+
+    // If the query fails because tagged column doesn't exist, retry without it
+    if (!fetchResponse.ok) {
+      const errorText = await fetchResponse.text();
+      try {
+        const errorData = JSON.parse(errorText);
+        // Check if it's a column doesn't exist error
+        if (errorData.code === "42703" && errorData.message?.includes("tagged")) {
+          console.log("[SPEAKERS] tagged column doesn't exist yet, fetching without it");
+          // Retry without tagged column
+          fetchUrl = `${supabaseUrl}/rest/v1/speakers?user_id=eq.${user.id}&select=id,name,created_at&order=name.asc`;
+          fetchResponse = await fetch(fetchUrl, {
+            method: "GET",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              apikey: supabaseAnonKey,
+              "Content-Type": "application/json",
+            },
+          });
+        }
+      } catch {
+        // If we can't parse the error, continue with original error
+      }
+    }
 
     if (!fetchResponse.ok) {
       const errorText = await fetchResponse.text();
@@ -73,10 +98,17 @@ export async function GET(request: NextRequest) {
     }
 
     const speakers = await fetchResponse.json();
+    
+    // Add tagged: false to speakers if the column doesn't exist
+    const speakersWithTagged = Array.isArray(speakers) 
+      ? speakers.map((s: any) => ({ ...s, tagged: s.tagged ?? false }))
+      : [];
+    
+    console.log("[GET /api/speakers] Fetched speakers:", speakersWithTagged);
 
     return NextResponse.json({
       success: true,
-      speakers: Array.isArray(speakers) ? speakers : [],
+      speakers: speakersWithTagged,
     });
   } catch (error) {
     console.error("Get speakers API error:", error);
