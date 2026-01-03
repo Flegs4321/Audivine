@@ -362,19 +362,18 @@ function RecorderPageContent() {
       seenFinalTextsRef.current.clear();
       
       // Start browser transcription if available and user hasn't selected OpenAI
-      // Use the transcriptionMethod state that was already loaded
-      if (transcriptionMethod === "browser" && transcription.isAvailable) {
+      // Always use browser transcription for live display
+      // If OpenAI is selected, Whisper will replace it after upload for better accuracy
+      if (transcription.isAvailable) {
         try {
-          console.log("[Recorder] Starting browser transcription...");
+          console.log("[Recorder] Starting browser transcription for live display...");
           await transcription.start();
           console.log("[Recorder] Browser transcription started successfully");
         } catch (err) {
           console.error("[Recorder] Failed to start transcription:", err);
           // Continue recording even if transcription fails
         }
-      } else if (transcriptionMethod === "openai") {
-        console.log("[Recorder] OpenAI transcription selected - skipping live transcription");
-      } else if (!transcription.isAvailable) {
+      } else {
         console.warn("[Recorder] Transcription not available");
       }
     } catch (err) {
@@ -491,18 +490,17 @@ function RecorderPageContent() {
       // Wait a moment to ensure previous stop is complete
       await new Promise(resolve => setTimeout(resolve, 150));
       
-      // Use the transcriptionMethod state that was already loaded
-      if (transcriptionMethod === "browser" && transcription.isAvailable && !transcription.isActive) {
+      // Always use browser transcription for live display
+      // If OpenAI is selected, Whisper will replace it after upload for better accuracy
+      if (transcription.isAvailable && !transcription.isActive) {
         try {
-          console.log("[Recorder] Restarting browser transcription...");
+          console.log("[Recorder] Restarting browser transcription for live display...");
           await transcription.start();
           console.log("[Recorder] Browser transcription restarted successfully");
         } catch (err) {
           console.error("[Recorder] Failed to restart transcription:", err);
           // Continue recording even if transcription fails
         }
-      } else if (transcriptionMethod === "openai") {
-        console.log("[Recorder] OpenAI transcription selected - skipping live transcription");
       }
 
       setState("recording");
@@ -513,6 +511,12 @@ function RecorderPageContent() {
   };
 
   const handleSegmentClick = (segment: SegmentType) => {
+    // Only allow segment selection when recording (not paused)
+    if (state !== "recording") {
+      console.warn("[Recorder] Cannot change segment while paused. Please resume recording first.");
+      return;
+    }
+
     const currentMs = getCurrentElapsedMs();
 
     // Close previous segment if any
@@ -697,26 +701,10 @@ function RecorderPageContent() {
       const finalTranscriptChunks = transcriptChunksRef.current;
       const finalElapsedTime = elapsedTimeRef.current;
 
-      // Get user's transcription method preference
-      let transcriptionMethod = "browser";
-      try {
-        const { supabase } = await import("@/lib/supabase/client");
-        const { data: { session } } = await supabase.auth.getSession();
-        if (session?.access_token) {
-          const settingsResponse = await fetch("/api/settings", {
-            headers: {
-              "Authorization": `Bearer ${session.access_token}`,
-            },
-          });
-          if (settingsResponse.ok) {
-            const settingsData = await settingsResponse.json();
-            transcriptionMethod = settingsData.settings?.transcription_method || "browser";
-          }
-        }
-      } catch (err) {
-        console.error("Error fetching transcription method:", err);
-        // Default to browser if we can't fetch settings
-      }
+      // Use the transcription method from state (already loaded from settings)
+      // This ensures we use the current selection without needing to fetch again
+      const currentTranscriptionMethod = transcriptionMethod || "browser";
+      console.log("[Upload] Using transcription method:", currentTranscriptionMethod);
 
       const metadata = {
         filename: "recording",
@@ -727,7 +715,7 @@ function RecorderPageContent() {
           endMs: s.endMs,
         })),
         // Only include browser transcription chunks if using browser method
-        transcriptChunks: transcriptionMethod === "browser" 
+        transcriptChunks: currentTranscriptionMethod === "browser" 
           ? finalTranscriptChunks.map((c) => ({
               text: c.text,
               timestampMs: c.timestampMs,
@@ -746,13 +734,13 @@ function RecorderPageContent() {
         console.log("[Recorder] Upload successful, recording ID:", result.recordingId);
         
         // If using OpenAI transcription, transcribe the audio now
-        if (transcriptionMethod === "openai") {
+        if (currentTranscriptionMethod === "openai") {
           try {
             const { supabase } = await import("@/lib/supabase/client");
             const { data: { session } } = await supabase.auth.getSession();
             
             if (session?.access_token) {
-              console.log("[Recorder] Starting OpenAI transcription...");
+              console.log("[Upload] Starting OpenAI Whisper transcription for recording:", result.recordingId);
               const transcribeResponse = await fetch("/api/sermons/transcribe", {
                 method: "POST",
                 headers: {
@@ -766,15 +754,41 @@ function RecorderPageContent() {
               });
 
               if (transcribeResponse.ok) {
-                console.log("[Recorder] OpenAI transcription completed");
+                const transcribeData = await transcribeResponse.json();
+                console.log("[Upload] OpenAI Whisper transcription completed successfully");
+                console.log("[Upload] Transcription chunks:", transcribeData.chunks?.length || 0);
+                
+                // Replace browser transcription with more accurate Whisper transcription
+                if (transcribeData.chunks && Array.isArray(transcribeData.chunks)) {
+                  const whisperChunks = transcribeData.chunks.map((chunk: any) => ({
+                    text: chunk.text,
+                    timestampMs: chunk.timestampMs || 0,
+                    isFinal: true,
+                  }));
+                  
+                  // Update the transcript display with Whisper results
+                  setTranscriptChunks(whisperChunks);
+                  transcriptChunksRef.current = whisperChunks;
+                  
+                  console.log("[Upload] Replaced browser transcription with Whisper transcription");
+                } else {
+                  console.warn("[Upload] Whisper transcription completed but no chunks returned");
+                }
               } else {
-                console.error("[Recorder] OpenAI transcription failed:", await transcribeResponse.text());
+                const errorText = await transcribeResponse.text();
+                console.error("[Upload] OpenAI Whisper transcription failed:", transcribeResponse.status, errorText);
+                setError(`Whisper transcription failed: ${errorText}`);
               }
+            } else {
+              console.error("[Upload] No session token available for Whisper transcription");
             }
           } catch (err) {
-            console.error("[Recorder] Error during OpenAI transcription:", err);
+            console.error("[Upload] Error during OpenAI Whisper transcription:", err);
+            setError(`Whisper transcription error: ${err instanceof Error ? err.message : "Unknown error"}`);
             // Don't fail the upload if transcription fails
           }
+        } else {
+          console.log("[Upload] Using browser transcription, skipping Whisper");
         }
         
         // Refresh sermons list after successful upload
@@ -924,11 +938,15 @@ function RecorderPageContent() {
                         <button
                           key={segment}
                           onClick={() => handleSegmentClick(segment)}
+                          disabled={state === "paused"}
                           className={`px-6 py-3 rounded-lg font-medium transition-all ${
-                            activeSegment === segment
+                            state === "paused"
+                              ? "bg-gray-300 text-gray-500 cursor-not-allowed"
+                              : activeSegment === segment
                               ? "bg-blue-600 text-white shadow-md"
                               : "bg-gray-200 text-gray-700 hover:bg-gray-300"
                           }`}
+                          title={state === "paused" ? "Resume recording to change segments" : `Select ${segment} segment`}
                         >
                           {segment}
                         </button>
@@ -1328,22 +1346,12 @@ function RecorderPageContent() {
                 </div>
               </div>
               <div className="h-[600px] overflow-y-auto border border-gray-200 rounded-lg p-4 bg-gray-50">
-                {transcriptionMethod === "openai" ? (
-                  <div className="text-center text-gray-400 mt-8">
-                    <p className="mb-2 font-semibold text-gray-600">OpenAI Whisper Transcription Selected</p>
-                    <p className="text-xs text-gray-500">
-                      Transcription will be processed automatically after you upload the recording.
-                    </p>
-                    {transcriptChunks.length > 0 && (
-                      <div className="mt-4 text-left">
-                        <p className="text-sm font-semibold text-gray-700 mb-2">Previous Browser Transcription:</p>
-                        {transcriptChunks.map((chunk, idx) => (
-                          <p key={idx} className="text-sm text-gray-600 mb-1">{chunk.text}</p>
-                        ))}
-                      </div>
-                    )}
+                {transcriptionMethod === "openai" && transcriptChunks.length > 0 && (
+                  <div className="mb-3 p-2 bg-blue-50 border border-blue-200 rounded text-xs text-blue-700">
+                    <strong>Live transcription:</strong> Showing browser transcription for real-time display. More accurate Whisper transcription will replace this after upload.
                   </div>
-                ) : !transcription.isAvailable ? (
+                )}
+                {!transcription.isAvailable ? (
                   <div className="text-center text-gray-400 mt-8">
                     <p className="mb-2">Realtime provider not configured</p>
                     <p className="text-xs text-gray-500">

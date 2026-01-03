@@ -139,6 +139,13 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
         return;
       }
       
+      // "aborted" occurs when recognition is stopped/interrupted (e.g., when pausing recording)
+      // This is expected behavior and not an error
+      if (event.error === "aborted") {
+        // Silently handle - this is normal when stopping/pausing
+        return;
+      }
+      
       // Log other errors as warnings (not errors) since they're usually recoverable
       if (event.error === "audio-capture" || event.error === "network") {
         console.warn("Speech recognition warning:", event.error, event.message || "");
