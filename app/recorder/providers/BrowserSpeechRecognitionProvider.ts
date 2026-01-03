@@ -131,9 +131,11 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
     };
 
     this.recognition.onerror = (event) => {
+      const errorType = event.error?.toLowerCase() || "";
+      
       // "no-speech" is a common, non-critical error that occurs when no speech is detected
       // It's expected behavior and not a real problem - the browser just times out
-      if (event.error === "no-speech") {
+      if (errorType === "no-speech" || errorType === "no_speech") {
         // Silently handle - this is normal when there's silence
         // Recognition will automatically restart via onend handler
         return;
@@ -141,13 +143,13 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
       
       // "aborted" occurs when recognition is stopped/interrupted (e.g., when pausing recording)
       // This is expected behavior and not an error
-      if (event.error === "aborted") {
+      if (errorType === "aborted") {
         // Silently handle - this is normal when stopping/pausing
         return;
       }
       
       // Log other errors as warnings (not errors) since they're usually recoverable
-      if (event.error === "audio-capture" || event.error === "network") {
+      if (errorType === "audio-capture" || errorType === "network") {
         console.warn("Speech recognition warning:", event.error, event.message || "");
       } else {
         // Only log actual errors for debugging

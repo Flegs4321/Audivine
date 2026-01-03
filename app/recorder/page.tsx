@@ -548,7 +548,7 @@ function RecorderPageContent() {
     }
   };
 
-  const handleMemberSelect = (memberName: string) => {
+  const handleMemberSelect = async (memberName: string) => {
     if (!memberName.trim()) return;
 
     const currentMs = getCurrentElapsedMs();
@@ -568,9 +568,21 @@ function RecorderPageContent() {
 
     // Close dropdown after selection
     setShowMemberDropdown(false);
+    setMemberSearchQuery("");
+
+    // Ensure transcription continues after dropdown interaction
+    // Sometimes clicking buttons can cause focus loss that stops recognition
+    if (state === "recording" && transcription.isAvailable && !transcription.isActive) {
+      try {
+        console.log("[Recorder] Restarting transcription after speaker selection...");
+        await transcription.start();
+      } catch (err) {
+        console.error("[Recorder] Failed to restart transcription after speaker selection:", err);
+      }
+    }
   };
 
-  const handleSermonSpeakerSelect = (speakerName: string) => {
+  const handleSermonSpeakerSelect = async (speakerName: string) => {
     if (!speakerName.trim()) return;
 
     const currentMs = getCurrentElapsedMs();
@@ -590,6 +602,18 @@ function RecorderPageContent() {
 
     // Close dropdown after selection
     setShowSermonSpeakerDropdown(false);
+    setSermonSpeakerSearchQuery("");
+
+    // Ensure transcription continues after dropdown interaction
+    // Sometimes clicking buttons can cause focus loss that stops recognition
+    if (state === "recording" && transcription.isAvailable && !transcription.isActive) {
+      try {
+        console.log("[Recorder] Restarting transcription after speaker selection...");
+        await transcription.start();
+      } catch (err) {
+        console.error("[Recorder] Failed to restart transcription after speaker selection:", err);
+      }
+    }
   };
 
   // Set up transcription callback
@@ -1009,9 +1033,10 @@ function RecorderPageContent() {
                                       return (
                                         <button
                                           key={member.id}
-                                          onClick={() => {
-                                            handleMemberSelect(member.name);
-                                            setMemberSearchQuery("");
+                                          onClick={async (e) => {
+                                            e.preventDefault();
+                                            e.stopPropagation();
+                                            await handleMemberSelect(member.name);
                                           }}
                                           className={`w-full text-left px-4 py-2 rounded-lg transition-colors border ${
                                             isTagged
@@ -1098,9 +1123,10 @@ function RecorderPageContent() {
                                       return (
                                         <button
                                           key={member.id}
-                                          onClick={() => {
-                                            handleSermonSpeakerSelect(member.name);
-                                            setSermonSpeakerSearchQuery("");
+                                          onClick={async (e) => {
+                                            e.preventDefault();
+                                            e.stopPropagation();
+                                            await handleSermonSpeakerSelect(member.name);
                                           }}
                                           className={`w-full text-left px-4 py-2 rounded-lg transition-colors border ${
                                             isTagged
