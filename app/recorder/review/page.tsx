@@ -603,8 +603,8 @@ function ReviewPageContent() {
                         type="number"
                         value={section.endMs ? Math.floor(section.endMs / 1000) : ""}
                         onChange={(e) => {
-                          const seconds = parseInt(e.target.value) || null;
-                          updateSection(section.id, { endMs: seconds ? seconds * 1000 : null });
+                          const seconds = parseInt(e.target.value);
+                          updateSection(section.id, { endMs: seconds && seconds > 0 ? seconds * 1000 : undefined });
                         }}
                         className="w-20 px-2 py-1 text-xs border border-gray-300 rounded"
                         placeholder="seconds"
