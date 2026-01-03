@@ -13,10 +13,31 @@ export default function Header() {
   const { user, signOut, loading: authLoading } = useAuth();
   const [settings, setSettings] = useState<UserSettings>({});
   const [loadingSettings, setLoadingSettings] = useState(true);
+  const [logoKey, setLogoKey] = useState(0);
 
   useEffect(() => {
     if (user) {
       loadSettings();
+      
+      // Reload settings when window gains focus (e.g., after returning from settings page)
+      const handleFocus = () => {
+        loadSettings();
+      };
+      
+      // Also reload when page becomes visible (handles tab switching)
+      const handleVisibilityChange = () => {
+        if (!document.hidden) {
+          loadSettings();
+        }
+      };
+      
+      window.addEventListener("focus", handleFocus);
+      document.addEventListener("visibilitychange", handleVisibilityChange);
+      
+      return () => {
+        window.removeEventListener("focus", handleFocus);
+        document.removeEventListener("visibilitychange", handleVisibilityChange);
+      };
     }
   }, [user]);
 
@@ -40,6 +61,14 @@ export default function Header() {
       if (response.ok) {
         const data = await response.json();
         if (data.settings) {
+          const newLogoUrl = data.settings.church_logo_url;
+          const oldLogoUrl = settings.church_logo_url;
+          
+          // Update logo key to force image reload if URL changed
+          if (newLogoUrl && newLogoUrl !== oldLogoUrl) {
+            setLogoKey(prev => prev + 1);
+          }
+          
           setSettings(data.settings);
         }
       }
@@ -65,9 +94,15 @@ export default function Header() {
           <div className="flex items-center">
             {settings.church_logo_url && (
               <img
-                src={settings.church_logo_url}
+                src={`${settings.church_logo_url}?v=${logoKey}&t=${Date.now()}`}
                 alt={settings.church_name || "Church logo"}
                 className="h-12 w-12 object-contain rounded mr-2"
+                key={`${settings.church_logo_url}-${logoKey}`}
+                onError={(e) => {
+                  // If image fails to load, try reloading settings
+                  console.error("Logo image failed to load, reloading settings...");
+                  loadSettings();
+                }}
               />
             )}
             {settings.church_name && (

@@ -57,6 +57,7 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
   private startTimeMs: number = 0;
   private lastProcessedIndex: number = 0; // Track the last result index we've processed
   private sentFinalTexts: Set<string> = new Set(); // Track final texts we've already sent
+  private isRunning: boolean = false; // Track if we're supposed to be running
 
   constructor() {
     // Initialize SpeechRecognition if available
@@ -130,13 +131,36 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
     };
 
     this.recognition.onerror = (event) => {
-      console.error("Speech recognition error:", event.error);
-      // Continue running even if there's an error
+      // "no-speech" is a common, non-critical error that occurs when no speech is detected
+      // It's expected behavior and not a real problem - the browser just times out
+      if (event.error === "no-speech") {
+        // Silently handle - this is normal when there's silence
+        // Recognition will automatically restart via onend handler
+        return;
+      }
+      
+      // Log other errors as warnings (not errors) since they're usually recoverable
+      if (event.error === "audio-capture" || event.error === "network") {
+        console.warn("Speech recognition warning:", event.error, event.message || "");
+      } else {
+        // Only log actual errors for debugging
+        console.error("Speech recognition error:", event.error, event.message || "");
+      }
+      
+      // Continue running - most errors are recoverable
     };
 
     this.recognition.onend = () => {
       // Auto-restart if we're still supposed to be running
-      // This will be controlled by the stop() method
+      // This handles cases where recognition stops due to "no-speech" or other recoverable errors
+      if (this.isRunning && this.recognition) {
+        try {
+          this.recognition.start();
+        } catch (error) {
+          // If restart fails (e.g., already started), that's okay
+          // The recognition might have already restarted automatically
+        }
+      }
     };
   }
 
@@ -168,10 +192,12 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
     this.startTimeMs = Date.now();
     this.lastProcessedIndex = 0; // Reset processed index when starting
     this.sentFinalTexts.clear(); // Clear sent texts when starting
+    this.isRunning = true; // Mark that we're running
 
     try {
       this.recognition.start();
     } catch (error) {
+      this.isRunning = false; // Reset flag if start fails
       // If still fails, throw the error
       if (error instanceof Error) {
         console.error("[Transcription] Failed to start recognition:", error);
@@ -186,6 +212,7 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
   }
 
   stop(): void {
+    this.isRunning = false; // Mark that we're no longer running
     if (this.recognition) {
       try {
         this.recognition.stop();

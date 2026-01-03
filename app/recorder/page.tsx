@@ -111,6 +111,9 @@ function RecorderPageContent() {
   const [members, setMembers] = useState<Array<{ id: string; name: string }>>([]);
   const [loadingMembers, setLoadingMembers] = useState(false);
   const [showMemberDropdown, setShowMemberDropdown] = useState(false);
+  const [showSermonSpeakerDropdown, setShowSermonSpeakerDropdown] = useState(false);
+  const [memberSearchQuery, setMemberSearchQuery] = useState("");
+  const [sermonSpeakerSearchQuery, setSermonSpeakerSearchQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
@@ -531,8 +534,13 @@ function RecorderPageContent() {
     // Show member dropdown if Sharing segment is selected
     if (segment === "Sharing") {
       setShowMemberDropdown(true);
+      setShowSermonSpeakerDropdown(false);
+    } else if (segment === "Sermon") {
+      setShowSermonSpeakerDropdown(true);
+      setShowMemberDropdown(false);
     } else {
       setShowMemberDropdown(false);
+      setShowSermonSpeakerDropdown(false);
     }
   };
 
@@ -556,6 +564,28 @@ function RecorderPageContent() {
 
     // Close dropdown after selection
     setShowMemberDropdown(false);
+  };
+
+  const handleSermonSpeakerSelect = (speakerName: string) => {
+    if (!speakerName.trim()) return;
+
+    const currentMs = getCurrentElapsedMs();
+    
+    // Insert speaker name as a special chunk in the transcript
+    const speakerChunk: TranscriptChunk = {
+      text: `[${speakerName} speaking:]`,
+      timestampMs: currentMs,
+      isFinal: true,
+    };
+
+    setTranscriptChunks((prev) => {
+      const updated = [...prev, speakerChunk];
+      transcriptChunksRef.current = updated;
+      return updated;
+    });
+
+    // Close dropdown after selection
+    setShowSermonSpeakerDropdown(false);
   };
 
   // Set up transcription callback
@@ -924,29 +954,157 @@ function RecorderPageContent() {
                                 Add speakers in Settings
                               </a>
                             </div>
-                          ) : (
-                            <div className="space-y-2 max-h-60 overflow-y-auto">
-                              {members.map((member) => {
-                                const isTagged = (member as any).tagged === true;
-                                return (
-                                  <button
-                                    key={member.id}
-                                    onClick={() => handleMemberSelect(member.name)}
-                                    className={`w-full text-left px-4 py-2 rounded-lg transition-colors border ${
-                                      isTagged
-                                        ? "bg-blue-100 border-blue-300 hover:bg-blue-200 font-semibold"
-                                        : "bg-gray-50 border-gray-200 hover:bg-blue-50 hover:text-blue-700"
-                                    }`}
-                                  >
-                                    {isTagged && <span className="text-blue-600 mr-2">⭐</span>}
-                                    {member.name}
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          )}
+                          ) : (() => {
+                            // Filter by search query
+                            const filtered = members.filter((member) =>
+                              member.name.toLowerCase().includes(memberSearchQuery.toLowerCase())
+                            );
+                            
+                            // Sort: tagged first, then alphabetical
+                            const sorted = filtered.sort((a, b) => {
+                              const aTagged = (a as any).tagged === true;
+                              const bTagged = (b as any).tagged === true;
+                              
+                              if (aTagged && !bTagged) return -1;
+                              if (!aTagged && bTagged) return 1;
+                              return a.name.localeCompare(b.name);
+                            });
+                            
+                            return (
+                              <>
+                                <input
+                                  type="text"
+                                  placeholder="Search speakers..."
+                                  value={memberSearchQuery}
+                                  onChange={(e) => setMemberSearchQuery(e.target.value)}
+                                  className="w-full px-3 py-2 mb-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                                  autoFocus
+                                />
+                                {sorted.length === 0 ? (
+                                  <div className="text-center py-4 text-gray-500">
+                                    No speakers match "{memberSearchQuery}"
+                                  </div>
+                                ) : (
+                                  <div className="space-y-2 max-h-60 overflow-y-auto">
+                                    {sorted.map((member) => {
+                                      const isTagged = (member as any).tagged === true;
+                                      return (
+                                        <button
+                                          key={member.id}
+                                          onClick={() => {
+                                            handleMemberSelect(member.name);
+                                            setMemberSearchQuery("");
+                                          }}
+                                          className={`w-full text-left px-4 py-2 rounded-lg transition-colors border ${
+                                            isTagged
+                                              ? "bg-blue-100 border-blue-300 hover:bg-blue-200 font-semibold"
+                                              : "bg-gray-50 border-gray-200 hover:bg-blue-50 hover:text-blue-700"
+                                          }`}
+                                        >
+                                          {isTagged && <span className="text-blue-600 mr-2">⭐</span>}
+                                          {member.name}
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+                              </>
+                            );
+                          })()}
                           <button
-                            onClick={() => setShowMemberDropdown(false)}
+                            onClick={() => {
+                              setShowMemberDropdown(false);
+                              setMemberSearchQuery("");
+                            }}
+                            className="mt-3 w-full px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 text-sm"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Speaker Dropdown for Sermon - Tagged First, Then All Alphabetically */}
+                    {activeSegment === "Sermon" && showSermonSpeakerDropdown && (
+                      <div className="w-full max-w-md">
+                        <div className="bg-white border border-gray-300 rounded-lg shadow-lg p-4">
+                          <label className="block text-sm font-medium text-gray-700 mb-2">
+                            Select Speaker:
+                          </label>
+                          {loadingMembers ? (
+                            <div className="text-center py-4 text-gray-500">Loading speakers...</div>
+                          ) : members.length === 0 ? (
+                            <div className="text-center py-4 text-gray-500">
+                              <p className="mb-2">No speakers found.</p>
+                              <a
+                                href="/settings"
+                                className="text-blue-600 hover:text-blue-800 underline text-sm"
+                              >
+                                Add speakers in Settings
+                              </a>
+                            </div>
+                          ) : (() => {
+                            // Filter by search query
+                            const filtered = members.filter((member) =>
+                              member.name.toLowerCase().includes(sermonSpeakerSearchQuery.toLowerCase())
+                            );
+                            
+                            // Sort: tagged first, then alphabetical
+                            const sorted = filtered.sort((a, b) => {
+                              const aTagged = (a as any).tagged === true;
+                              const bTagged = (b as any).tagged === true;
+                              
+                              if (aTagged && !bTagged) return -1;
+                              if (!aTagged && bTagged) return 1;
+                              return a.name.localeCompare(b.name);
+                            });
+                            
+                            return (
+                              <>
+                                <input
+                                  type="text"
+                                  placeholder="Search speakers..."
+                                  value={sermonSpeakerSearchQuery}
+                                  onChange={(e) => setSermonSpeakerSearchQuery(e.target.value)}
+                                  className="w-full px-3 py-2 mb-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                                  autoFocus
+                                />
+                                {sorted.length === 0 ? (
+                                  <div className="text-center py-4 text-gray-500">
+                                    No speakers match "{sermonSpeakerSearchQuery}"
+                                  </div>
+                                ) : (
+                                  <div className="space-y-2 max-h-60 overflow-y-auto">
+                                    {sorted.map((member) => {
+                                      const isTagged = (member as any).tagged === true;
+                                      return (
+                                        <button
+                                          key={member.id}
+                                          onClick={() => {
+                                            handleSermonSpeakerSelect(member.name);
+                                            setSermonSpeakerSearchQuery("");
+                                          }}
+                                          className={`w-full text-left px-4 py-2 rounded-lg transition-colors border ${
+                                            isTagged
+                                              ? "bg-blue-100 border-blue-300 hover:bg-blue-200 font-semibold"
+                                              : "bg-gray-50 border-gray-200 hover:bg-blue-50 hover:text-blue-700"
+                                          }`}
+                                        >
+                                          {isTagged && <span className="text-blue-600 mr-2">⭐</span>}
+                                          {member.name}
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+                              </>
+                            );
+                          })()}
+                          <button
+                            onClick={() => {
+                              setShowSermonSpeakerDropdown(false);
+                              setSermonSpeakerSearchQuery("");
+                            }}
                             className="mt-3 w-full px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 text-sm"
                           >
                             Cancel

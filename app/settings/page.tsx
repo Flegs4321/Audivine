@@ -635,7 +635,14 @@ export default function SettingsPage() {
       // Reload settings
       await loadSettings();
       setLogoFile(null);
-      alert("Logo uploaded successfully!");
+      
+      // Force a page reload to ensure Header picks up the new logo
+      // This is a workaround for browser caching issues
+      if (window.confirm("Logo uploaded successfully! The page will reload to show the new logo.")) {
+        window.location.reload();
+      } else {
+        alert("Logo uploaded successfully! Please refresh the page to see the new logo.");
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to upload logo");
       console.error("Upload error:", err);
