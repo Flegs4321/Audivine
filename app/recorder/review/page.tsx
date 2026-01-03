@@ -172,7 +172,7 @@ function ReviewPageContent() {
     return `${minutes}:${seconds.toString().padStart(2, "0")}`;
   };
 
-  const handleExportSermon = async (section: EditableSection) => {
+  const handleDownloadSermonSegment = async (section: EditableSection) => {
     if (!recordingId || section.label !== "Sermon") return;
 
     try {
@@ -180,7 +180,7 @@ function ReviewPageContent() {
       const { data: { session } } = await supabase.auth.getSession();
 
       if (!session?.access_token) {
-        alert("You must be logged in to export audio");
+        alert("You must be logged in to download audio");
         return;
       }
 
@@ -202,27 +202,118 @@ function ReviewPageContent() {
         throw new Error("Recording has no audio file");
       }
 
-      // Extract audio segment using Web Audio API (client-side)
-      alert(`Extracting sermon segment from ${formatTime(section.startMs)} to ${section.endMs ? formatTime(section.endMs) : 'end'}...\n\nThis will download the full audio. You can use the timestamps to extract the sermon segment manually, or we can implement server-side extraction with ffmpeg.`);
+      // Show loading message
+      const loadingMsg = `Extracting sermon segment from ${formatTime(section.startMs)} to ${section.endMs ? formatTime(section.endMs) : 'end'}...\n\nThis may take a moment.`;
+      alert(loadingMsg);
 
-      // For now, provide download link with instructions
-      // In the future, we can implement client-side extraction using Web Audio API
-      // or server-side extraction using ffmpeg
+      // Fetch the audio file
+      const audioResponse = await fetch(audioUrl);
+      if (!audioResponse.ok) {
+        throw new Error("Failed to fetch audio file");
+      }
+
+      const audioBlob = await audioResponse.blob();
+      const audioArrayBuffer = await audioBlob.arrayBuffer();
+
+      // Create audio context and decode audio
+      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const audioBuffer = await audioContext.decodeAudioData(audioArrayBuffer);
+
+      // Calculate segment boundaries
+      const startSample = Math.floor((section.startMs / 1000) * audioBuffer.sampleRate);
+      const endSample = section.endMs 
+        ? Math.floor((section.endMs / 1000) * audioBuffer.sampleRate)
+        : audioBuffer.length;
+      const segmentLength = endSample - startSample;
+
+      // Create new audio buffer for the segment
+      const segmentBuffer = audioContext.createBuffer(
+        audioBuffer.numberOfChannels,
+        segmentLength,
+        audioBuffer.sampleRate
+      );
+
+      // Copy the segment data
+      for (let channel = 0; channel < audioBuffer.numberOfChannels; channel++) {
+        const inputData = audioBuffer.getChannelData(channel);
+        const outputData = segmentBuffer.getChannelData(channel);
+        for (let i = 0; i < segmentLength; i++) {
+          outputData[i] = inputData[startSample + i];
+        }
+      }
+
+      // Convert audio buffer to WAV format
+      const wavBlob = audioBufferToWav(segmentBuffer);
+      
+      // Download the segment
+      const url = window.URL.createObjectURL(wavBlob);
       const a = document.createElement("a");
-      a.href = audioUrl;
-      a.download = `full-recording-${recordingId}.webm`;
-      a.target = "_blank";
+      a.href = url;
+      a.download = `sermon-segment-${recordingId}-${Date.now()}.wav`;
       document.body.appendChild(a);
       a.click();
+      window.URL.revokeObjectURL(url);
       document.body.removeChild(a);
 
-      // Show instructions
-      const instructions = `Sermon Segment:\nStart: ${formatTime(section.startMs)}\nEnd: ${section.endMs ? formatTime(section.endMs) : 'End of recording'}\n\nUse audio editing software (Audacity, GarageBand, etc.) to extract this segment from the downloaded file.`;
-      alert(instructions);
+      alert("Sermon segment downloaded! You can now upload this file to Spotify.");
     } catch (err) {
-      console.error("Export error:", err);
-      alert(err instanceof Error ? err.message : "Failed to export sermon");
+      console.error("Download error:", err);
+      alert(err instanceof Error ? err.message : "Failed to download sermon segment");
     }
+  };
+
+  // Helper function to convert AudioBuffer to WAV blob
+  const audioBufferToWav = (buffer: AudioBuffer): Blob => {
+    const length = buffer.length;
+    const numberOfChannels = buffer.numberOfChannels;
+    const sampleRate = buffer.sampleRate;
+    const arrayBuffer = new ArrayBuffer(44 + length * numberOfChannels * 2);
+    const view = new DataView(arrayBuffer);
+    const channels: Float32Array[] = [];
+    let offset = 0;
+    let pos = 0;
+
+    // Write WAV header
+    const setUint16 = (data: number) => {
+      view.setUint16(pos, data, true);
+      pos += 2;
+    };
+    const setUint32 = (data: number) => {
+      view.setUint32(pos, data, true);
+      pos += 4;
+    };
+
+    // RIFF identifier
+    setUint32(0x46464952); // "RIFF"
+    setUint32(36 + length * numberOfChannels * 2); // File size - 8
+    setUint32(0x45564157); // "WAVE"
+    setUint32(0x20746d66); // "fmt "
+    setUint32(16); // Format chunk size
+    setUint16(1); // Audio format (1 = PCM)
+    setUint16(numberOfChannels);
+    setUint32(sampleRate);
+    setUint32(sampleRate * numberOfChannels * 2); // Byte rate
+    setUint16(numberOfChannels * 2); // Block align
+    setUint16(16); // Bits per sample
+    setUint32(0x61746164); // "data"
+    setUint32(length * numberOfChannels * 2); // Data chunk size
+
+    // Write audio data
+    for (let i = 0; i < numberOfChannels; i++) {
+      channels.push(buffer.getChannelData(i));
+    }
+
+    while (pos < arrayBuffer.byteLength) {
+      for (let i = 0; i < numberOfChannels; i++) {
+        let sample = Math.max(-1, Math.min(1, channels[i][offset]));
+        sample = sample < 0 ? sample * 0x8000 : sample * 0x7FFF;
+        view.setInt16(pos, sample, true);
+        pos += 2;
+      }
+      offset++;
+    }
+
+    return new Blob([arrayBuffer], { type: "audio/wav" });
   };
 
   const updateSection = (id: string, updates: Partial<EditableSection>) => {
@@ -526,10 +617,10 @@ function ReviewPageContent() {
                 </div>
                 {section.label === "Sermon" && (
                   <button
-                    onClick={() => handleExportSermon(section)}
+                    onClick={() => handleDownloadSermonSegment(section)}
                     className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm"
                   >
-                    Export for Spotify
+                    Download Sermon Segment
                   </button>
                 )}
               </div>
