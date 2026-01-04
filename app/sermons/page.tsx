@@ -180,18 +180,30 @@ export default function SermonsPage() {
     setError(null);
 
     try {
+      // Get the session token from Supabase client
+      const { supabase } = await import("@/lib/supabase/client");
+      const { data: { session } } = await supabase.auth.getSession();
+      
+      if (!session?.access_token) {
+        throw new Error("Not authenticated. Please log in to upload sermons.");
+      }
+
       const formData = new FormData();
       formData.append("file", uploadFile);
       formData.append("title", uploadFile.name.replace(/\.[^/.]+$/, "")); // Remove extension
 
       const response = await fetch("/api/sermons/upload", {
         method: "POST",
+        headers: {
+          "Authorization": `Bearer ${session.access_token}`,
+        },
         body: formData,
       });
 
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || "Upload failed");
+        const errorData = await response.json().catch(() => ({ error: "Upload failed", message: `HTTP ${response.status}: ${response.statusText}` }));
+        const errorMessage = errorData.message || errorData.error || `Upload failed: ${response.status} ${response.statusText}`;
+        throw new Error(errorMessage);
       }
 
       // Reload sermons from Supabase

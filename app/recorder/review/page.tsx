@@ -449,6 +449,197 @@ function ReviewPageContent() {
     }
   };
 
+  const exportToWord = async () => {
+    if (!fullSummary) return;
+    
+    try {
+      // Dynamically import docx and file-saver
+      const { Document, Packer, Paragraph, TextRun, HeadingLevel, NumberFormat } = await import("docx");
+      const { saveAs } = await import("file-saver");
+      
+      const docElements: any[] = [];
+      const lines = fullSummary.split(/\n/);
+      
+      let i = 0;
+      while (i < lines.length) {
+        const line = lines[i].trim();
+        
+        // Skip empty lines
+        if (!line) {
+          i++;
+          continue;
+        }
+        
+        // Detect section headings (common patterns)
+        const isSectionHeading = /^(announcements?|sharing|sermon|message|key points?|takeaways?|scripture|closing|introduction|summary)/i.test(line) &&
+                                 (line.length < 100 && (line === line.toUpperCase() || line.split(" ").length < 5));
+        
+        // Detect markdown headings (# ## ###)
+        const markdownHeading = line.match(/^(#{1,3})\s+(.+)$/);
+        
+        // Detect bullet points (-, *, •, or numbered 1. 2. etc.)
+        const bulletMatch = line.match(/^[\s]*[-*•]\s+(.+)$/);
+        const numberedMatch = line.match(/^[\s]*(\d+)[.)]\s+(.+)$/);
+        
+        if (markdownHeading) {
+          // Markdown heading
+          const level = markdownHeading[1].length;
+          const text = markdownHeading[2].trim();
+          docElements.push(new Paragraph({
+            text: text,
+            heading: level === 1 ? HeadingLevel.HEADING_1 : level === 2 ? HeadingLevel.HEADING_2 : HeadingLevel.HEADING_3,
+            spacing: { after: 200, before: level === 1 ? 0 : 120 },
+          }));
+          i++;
+        } else if (isSectionHeading) {
+          // Section heading
+          docElements.push(new Paragraph({
+            text: line,
+            heading: HeadingLevel.HEADING_2,
+            spacing: { after: 200, before: 240 },
+          }));
+          i++;
+        } else if (bulletMatch || numberedMatch) {
+          // Determine if it's a numbered list or bullet list
+          const isNumbered = !!numberedMatch;
+          
+          // Collect all consecutive bullet/numbered points
+          const listItems: string[] = [];
+          while (i < lines.length) {
+            const currentLine = lines[i].trim();
+            const currentBullet = currentLine.match(/^[\s]*[-*•]\s+(.+)$/);
+            const currentNumbered = currentLine.match(/^[\s]*(\d+)[.)]\s+(.+)$/);
+            
+            if (isNumbered && currentNumbered && currentNumbered.length >= 3) {
+              // currentNumbered[1] is the number, currentNumbered[2] is the text
+              const itemText = currentNumbered[2]?.trim();
+              if (itemText) {
+                listItems.push(itemText);
+              }
+              i++;
+            } else if (!isNumbered && currentBullet) {
+              // currentBullet[1] is the text
+              const itemText = currentBullet[1]?.trim();
+              if (itemText) {
+                listItems.push(itemText);
+              }
+              i++;
+            } else if (!currentLine) {
+              // Empty line - might be end of list
+              i++;
+              break;
+            } else {
+              // Not a list item, stop collecting
+              break;
+            }
+          }
+          
+          // Create list
+          if (listItems.length > 0) {
+            listItems.forEach((item, idx) => {
+              if (isNumbered) {
+                // Numbered list
+                docElements.push(new Paragraph({
+                  text: item,
+                  numbering: {
+                    reference: "default-numbering",
+                    level: 0,
+                  },
+                  spacing: { after: 100 },
+                }));
+              } else {
+                // Bullet list
+                docElements.push(new Paragraph({
+                  text: item,
+                  bullet: {
+                    level: 0,
+                  },
+                  spacing: { after: 100 },
+                }));
+              }
+            });
+            // Add spacing after list
+            docElements.push(new Paragraph({
+              text: "",
+              spacing: { after: 120 },
+            }));
+          }
+        } else {
+          // Regular paragraph - collect until we hit a heading or bullet
+          const paraLines: string[] = [line];
+          i++;
+          
+          // Collect consecutive non-bullet, non-heading lines
+          while (i < lines.length) {
+            const nextLine = lines[i].trim();
+            if (!nextLine) {
+              i++;
+              break;
+            }
+            
+            // Stop if we hit a heading or bullet
+            if (nextLine.match(/^#{1,3}\s+/) || 
+                nextLine.match(/^[\s]*[-*•]\s+/) ||
+                nextLine.match(/^[\s]*\d+[.)]\s+/) ||
+                (/^(announcements?|sharing|sermon|message|key points?|takeaways?|scripture|closing|introduction|summary)/i.test(nextLine) &&
+                 nextLine.length < 100 && (nextLine === nextLine.toUpperCase() || nextLine.split(" ").length < 5))) {
+              break;
+            }
+            
+            paraLines.push(nextLine);
+            i++;
+          }
+          
+          // Create paragraph from collected lines
+          const paraText = paraLines.join(" ").trim();
+          if (paraText) {
+            docElements.push(new Paragraph({
+              text: paraText,
+              spacing: { after: 120 },
+            }));
+          }
+        }
+      }
+      
+      // Create the document with numbering support
+      const doc = new Document({
+        numbering: {
+          config: [
+            {
+              reference: "default-numbering",
+              levels: [
+                {
+                  level: 0,
+                  format: NumberFormat.DECIMAL,
+                  text: "%1.",
+                  alignment: "left",
+                },
+              ],
+            },
+          ],
+        },
+        sections: [
+          {
+            children: docElements,
+          },
+        ],
+      });
+      
+      // Generate and download the Word document
+      const blob = await Packer.toBlob(doc);
+      
+      // Get recording title or use default filename
+      const recordingTitle = sections.find(s => s.label === "Sermon")?.text?.substring(0, 50) || "Sermon Summary";
+      const filename = `${recordingTitle.replace(/[^a-z0-9]/gi, "_")}_${new Date().toISOString().split("T")[0]}.docx`;
+      
+      saveAs(blob, filename);
+      alert("Word document exported successfully!");
+    } catch (err) {
+      console.error("Failed to export to Word:", err);
+      alert("Failed to export to Word document. Please try again.");
+    }
+  };
+
   const saveChanges = async () => {
     if (!recordingId) return;
     
@@ -754,6 +945,12 @@ function ReviewPageContent() {
                   className="px-6 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
                 >
                   Copy to Clipboard
+                </button>
+                <button
+                  onClick={exportToWord}
+                  className="px-6 py-2 bg-green-600 text-white rounded hover:bg-green-700"
+                >
+                  Export to Word
                 </button>
                 <button
                   onClick={() => setShowSummaryModal(false)}

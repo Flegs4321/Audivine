@@ -84,6 +84,11 @@ export async function POST(request: NextRequest) {
         persistSession: false,
         autoRefreshToken: false,
       },
+      global: {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      },
     });
     
     // Get user directly from token
@@ -94,6 +99,17 @@ export async function POST(request: NextRequest) {
         { error: "Unauthorized", message: "You must be logged in to upload sermons", details: authError?.message },
         { status: 401 }
       );
+    }
+    
+    // Set session to ensure RLS works for storage and database operations
+    try {
+      await supabase.auth.setSession({
+        access_token: token,
+        refresh_token: '',
+      });
+    } catch (sessionError) {
+      console.warn("Warning: Could not set session, continuing anyway:", sessionError);
+      // Continue - the Authorization header should work
     }
     
     const formData = await request.formData();
@@ -168,6 +184,51 @@ export async function POST(request: NextRequest) {
         { error: "Failed to save sermon", message: dbError.message },
         { status: 500 }
       );
+    }
+
+    // Check if user has OpenAI configured and transcribe if available
+    // This happens asynchronously so it doesn't block the upload response
+    try {
+      // Get user settings to check transcription method
+      const settingsResponse = await fetch(`${supabaseUrl}/rest/v1/user_settings?user_id=eq.${user.id}&select=transcription_method,openai_api_key`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'apikey': supabaseAnonKey,
+          'Content-Type': 'application/json',
+        },
+      });
+      
+      if (settingsResponse.ok) {
+        const settings = await settingsResponse.json();
+        const userSettings = Array.isArray(settings) && settings.length > 0 ? settings[0] : null;
+        
+        // If user has OpenAI configured and transcription method is set to OpenAI, transcribe
+        if (userSettings && userSettings.openai_api_key && userSettings.transcription_method === "openai") {
+          console.log("[Upload] Initiating OpenAI Whisper transcription for uploaded sermon");
+          // Transcribe using OpenAI Whisper in the background
+          // Don't await - let it run asynchronously so upload response isn't delayed
+          fetch(`${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/api/sermons/transcribe`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${token}`,
+            },
+            body: JSON.stringify({
+              recordingId: dbData.id,
+              audioUrl: publicUrl,
+            }),
+          }).catch((err) => {
+            console.error("Background transcription failed:", err);
+            // Don't fail the upload if transcription fails
+          });
+        } else {
+          console.log("[Upload] Skipping transcription - OpenAI not configured or browser method selected");
+        }
+      }
+    } catch (transcribeError) {
+      console.error("Error checking transcription settings:", transcribeError);
+      // Don't fail the upload if transcription setup fails
     }
 
     return NextResponse.json({

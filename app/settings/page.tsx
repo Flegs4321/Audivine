@@ -1205,13 +1205,13 @@ export default function SettingsPage() {
                   value={openaiPrompt}
                   onChange={(e) => {
                     const newValue = e.target.value;
-                    if (newValue.length <= 1000) {
+                    if (newValue.length <= 2000) {
                       setOpenaiPrompt(newValue);
                     }
                   }}
                   placeholder="Enter a custom prompt to instruct OpenAI on how to process transcripts (e.g., 'Focus on key biblical themes and practical applications')"
                   rows={4}
-                  maxLength={1000}
+                  maxLength={2000}
                   className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
                 />
                 <div className="flex justify-between items-center mt-1">
@@ -1219,7 +1219,7 @@ export default function SettingsPage() {
                     Customize how OpenAI processes your transcripts. Leave blank to use default prompts.
                   </p>
                   <p className="text-xs text-gray-400">
-                    {openaiPrompt.length}/1000 characters
+                    {openaiPrompt.length}/2000 characters
                   </p>
                 </div>
               </div>

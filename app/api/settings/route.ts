@@ -191,9 +191,9 @@ export async function PUT(request: NextRequest) {
     // We'll try to save it, but if it fails with PGRST204, we'll retry without it
     let includePrompt = true;
     if (openai_prompt !== undefined) {
-      // Truncate to 1000 characters if longer
+      // Truncate to 2000 characters if longer
       updateData.openai_prompt = openai_prompt && openai_prompt.length > 0 
-        ? openai_prompt.substring(0, 1000).trim() 
+        ? openai_prompt.substring(0, 2000).trim() 
         : null;
     }
     
