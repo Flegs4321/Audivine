@@ -21,6 +21,7 @@ function ReviewPageContent() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [detectingSegments, setDetectingSegments] = useState(false);
   const [activeTabs, setActiveTabs] = useState<Record<string, "transcript" | "summary">>({});
   const [editingTranscripts, setEditingTranscripts] = useState<Record<string, boolean>>({});
   const [fullSummary, setFullSummary] = useState<string | null>(null);
@@ -685,6 +686,75 @@ function ReviewPageContent() {
     }
   };
 
+  const handleAutoDetectSegments = async () => {
+    if (!recordingId) return;
+
+    if (!hasOpenAIKey) {
+      alert("OpenAI API key is required for auto-detection. Please configure it in Settings.");
+      return;
+    }
+
+    if (!confirm("This will analyze the transcript and automatically detect where Announcements, Sharing, and Sermon sections begin. Existing segments will be replaced. Continue?")) {
+      return;
+    }
+
+    setDetectingSegments(true);
+    setError(null);
+
+    try {
+      const { supabase } = await import("@/lib/supabase/client");
+      const { data: { session } } = await supabase.auth.getSession();
+
+      if (!session?.access_token) {
+        throw new Error("Not authenticated");
+      }
+
+      const response = await fetch(`/api/recordings/${recordingId}/detect-segments`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${session.access_token}`,
+        },
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.message || errorData.error || "Failed to detect segments");
+      }
+
+      const data = await response.json();
+      
+      // Reload sections from the database
+      const recordingResponse = await fetch(`/api/recordings/${recordingId}`, {
+        headers: {
+          "Authorization": `Bearer ${session.access_token}`,
+        },
+      });
+
+      if (recordingResponse.ok) {
+        const recordingData = await recordingResponse.json();
+        const recording = recordingData.recording;
+
+        if (recording.segments && Array.isArray(recording.segments) && recording.segments.length > 0) {
+          const loadedSections = recording.segments as FinalSection[];
+          setSections(
+            loadedSections.map((s: FinalSection, i: number) => ({
+              ...s,
+              id: `section-${i}`,
+            }))
+          );
+        }
+      }
+
+      alert(`Successfully detected ${data.segments?.length || 0} segment(s)! Review and adjust the times if needed.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to detect segments");
+      alert(err instanceof Error ? err.message : "Failed to detect segments");
+    } finally {
+      setDetectingSegments(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
@@ -734,6 +804,14 @@ function ReviewPageContent() {
               title={hasOpenAIKey === false ? "OpenAI API key required. Configure in Settings." : ""}
             >
               {generatingSummary ? "Generating..." : "Generate Summary for Members"}
+            </button>
+            <button
+              onClick={handleAutoDetectSegments}
+              disabled={detectingSegments || sections.length === 0 || hasOpenAIKey === false}
+              className="px-6 py-2 bg-purple-600 text-white rounded hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              title={hasOpenAIKey === false ? "OpenAI API key required. Configure in Settings." : "Automatically detect where Announcements, Sharing, and Sermon sections begin"}
+            >
+              {detectingSegments ? "Detecting..." : "Auto-detect Segments"}
             </button>
             <button
               onClick={() => router.back()}
