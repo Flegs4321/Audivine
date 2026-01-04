@@ -201,7 +201,7 @@ function RecorderPageContent() {
   };
 
   // Enumerate available audio input devices
-  const enumerateAudioDevices = async () => {
+  const enumerateAudioDevices = async (forcePermission = false) => {
     try {
       // Check if mediaDevices API is available
       if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
@@ -209,17 +209,28 @@ function RecorderPageContent() {
         return;
       }
 
-      // First request permission to access devices (required for device labels)
+      // Request permission to access devices (required for device labels)
+      // If forcePermission is true, we'll try harder to get permission
       try {
-        await navigator.mediaDevices.getUserMedia({ audio: true });
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        // Stop the stream immediately - we just needed permission
+        stream.getTracks().forEach(track => track.stop());
       } catch (err) {
         // Permission might be denied, but we can still try to enumerate
         console.warn("Permission denied for getUserMedia, but continuing enumeration");
+        if (forcePermission) {
+          alert("Microphone permission is required to see device names. Please allow microphone access in your browser settings.");
+        }
       }
 
       // Enumerate all devices
       const devices = await navigator.mediaDevices.enumerateDevices();
       const audioInputs = devices.filter(device => device.kind === 'audioinput');
+      
+      console.log(`[Device Enumeration] Found ${audioInputs.length} audio input device(s):`, 
+        audioInputs.map(d => ({ id: d.deviceId, label: d.label || 'Unnamed Device' }))
+      );
+      
       setAudioInputDevices(audioInputs);
 
       // Set the first device as default if none selected
@@ -234,6 +245,24 @@ function RecorderPageContent() {
   // Enumerate audio devices on mount
   useEffect(() => {
     enumerateAudioDevices();
+  }, []);
+
+  // Listen for device changes (when devices are added/removed)
+  useEffect(() => {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.addEventListener) {
+      return;
+    }
+
+    const handleDeviceChange = () => {
+      console.log("[Device Change] Audio device added or removed, re-enumerating...");
+      enumerateAudioDevices();
+    };
+
+    navigator.mediaDevices.addEventListener('devicechange', handleDeviceChange);
+
+    return () => {
+      navigator.mediaDevices.removeEventListener('devicechange', handleDeviceChange);
+    };
   }, []);
 
   const handleStartRecording = async () => {
@@ -255,6 +284,9 @@ function RecorderPageContent() {
           "Your browser does not support audio recording. Please use a modern browser like Chrome, Firefox, or Edge."
         );
       }
+
+      // Re-enumerate devices right before recording (in case a device was just plugged in)
+      await enumerateAudioDevices();
 
       // Request microphone permission and get media stream with selected device
       let stream: MediaStream;
@@ -864,26 +896,44 @@ function RecorderPageContent() {
             <div className="bg-white rounded-xl shadow-lg p-8">
               <div className="flex flex-col items-center space-y-6">
                 {/* Audio Device Selection */}
-                {(state === "idle" || state === "stopped") && audioInputDevices.length > 0 && (
+                {(state === "idle" || state === "stopped") && (
                   <div className="w-full max-w-md">
-                    <label htmlFor="audio-device" className="block text-sm font-medium text-gray-700 mb-2">
-                      Audio Input Device:
-                    </label>
-                    <select
-                      id="audio-device"
-                      value={selectedDeviceId || ""}
-                      onChange={(e) => setSelectedDeviceId(e.target.value)}
-                      className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 focus:ring-2 focus:ring-red-500 focus:border-red-500"
-                    >
-                      {audioInputDevices.map((device, index) => (
-                        <option key={device.deviceId} value={device.deviceId}>
-                          {device.label || `Microphone ${index + 1}`}
-                        </option>
-                      ))}
-                    </select>
-                    <p className="mt-1 text-xs text-gray-500">
-                      Select the audio input device you want to record from (e.g., soundboard via aux cable)
-                    </p>
+                    <div className="flex items-center justify-between mb-2">
+                      <label htmlFor="audio-device" className="block text-sm font-medium text-gray-700">
+                        Audio Input Device:
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => enumerateAudioDevices(true)}
+                        className="text-xs px-3 py-1 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded border border-gray-300"
+                        title="Refresh device list (useful after plugging in aux cable)"
+                      >
+                        🔄 Refresh
+                      </button>
+                    </div>
+                    {audioInputDevices.length > 0 ? (
+                      <>
+                        <select
+                          id="audio-device"
+                          value={selectedDeviceId || ""}
+                          onChange={(e) => setSelectedDeviceId(e.target.value)}
+                          className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 focus:ring-2 focus:ring-red-500 focus:border-red-500"
+                        >
+                          {audioInputDevices.map((device, index) => (
+                            <option key={device.deviceId} value={device.deviceId}>
+                              {device.label || `Microphone ${index + 1}`}
+                            </option>
+                          ))}
+                        </select>
+                        <p className="mt-1 text-xs text-gray-500">
+                          Select the audio input device you want to record from (e.g., soundboard via aux cable)
+                        </p>
+                      </>
+                    ) : (
+                      <div className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-gray-50 text-gray-500 text-sm">
+                        No audio input devices found. Click "Refresh" after connecting your device.
+                      </div>
+                    )}
                   </div>
                 )}
 
