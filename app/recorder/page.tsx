@@ -18,6 +18,9 @@ interface Segment {
   endMs: number | null;
 }
 
+// Maximum number of transcript chunks to display (keep most recent)
+const MAX_DISPLAYED_TRANSCRIPT_CHUNKS = 100;
+
 function RecorderPageContent() {
   const router = useRouter();
   const transcription = useTranscription();
@@ -137,6 +140,7 @@ function RecorderPageContent() {
   const segmentsRef = useRef<Segment[]>([]);
   const transcriptChunksRef = useRef<TranscriptChunk[]>([]);
   const elapsedTimeRef = useRef<number>(0);
+  const transcriptEndRef = useRef<HTMLDivElement | null>(null);
 
   // Timer effect
   useEffect(() => {
@@ -689,8 +693,25 @@ function RecorderPageContent() {
         // and add the final chunk
         const updated = [...prev.filter(c => c.isFinal || c.text !== chunk.text), chunk];
         transcriptChunksRef.current = updated;
+        
+        // Limit stored chunks to prevent memory issues (but keep more than displayed for upload)
+        // Store up to 500 chunks, but only display the most recent 100
+        if (updated.length > 500) {
+          // Keep the most recent 500 chunks
+          const trimmed = updated.slice(-500);
+          transcriptChunksRef.current = trimmed;
+          return trimmed;
+        }
+        
         return updated;
       });
+      
+      // Auto-scroll to bottom when new chunks arrive
+      setTimeout(() => {
+        if (transcriptEndRef.current) {
+          transcriptEndRef.current.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        }
+      }, 100);
     });
 
     return () => {
@@ -1440,13 +1461,15 @@ function RecorderPageContent() {
                   </div>
                 ) : (
                   <div className="space-y-3">
-                    {transcriptChunks.map((chunk, index) => {
+                    {transcriptChunks.slice(-MAX_DISPLAYED_TRANSCRIPT_CHUNKS).map((chunk, index) => {
                       // Check if this is a member tag (starts with [ and ends with sharing:])
                       const isMemberTag = chunk.text.startsWith("[") && chunk.text.includes(" sharing:]");
+                      const isLastChunk = index === transcriptChunks.slice(-MAX_DISPLAYED_TRANSCRIPT_CHUNKS).length - 1;
                       
                       return (
                         <div
                           key={index}
+                          ref={isLastChunk ? transcriptEndRef : null}
                           className={`text-sm leading-relaxed animate-fade-in ${
                             isMemberTag
                               ? "bg-blue-100 border-l-4 border-blue-500 pl-3 py-2 rounded"

@@ -285,7 +285,10 @@ export default function SettingsPage() {
   };
 
   const handleDeleteSelected = async () => {
-    if (selectedSpeakers.size === 0) return;
+    if (selectedSpeakers.size === 0) {
+      alert("No speakers selected. Please select speakers to delete.");
+      return;
+    }
 
     const selectedNames = speakers
       .filter(s => selectedSpeakers.has(s.id))
@@ -305,11 +308,15 @@ export default function SettingsPage() {
         throw new Error("Not authenticated");
       }
 
+      // Convert Set to Array to avoid iteration issues
+      const speakerIdsToDelete = Array.from(selectedSpeakers);
+      console.log(`[Delete Selected] Attempting to delete ${speakerIdsToDelete.length} speaker(s):`, speakerIdsToDelete);
+
       let deleted = 0;
       let errors: string[] = [];
 
-      // Delete all selected speakers
-      for (const speakerId of selectedSpeakers) {
+      // Delete all selected speakers (using Promise.all for better error handling)
+      const deletePromises = speakerIdsToDelete.map(async (speakerId) => {
         try {
           const response = await fetch(`/api/speakers/${speakerId}`, {
             method: "DELETE",
@@ -320,16 +327,29 @@ export default function SettingsPage() {
 
           if (response.ok) {
             deleted++;
+            console.log(`[Delete Selected] Successfully deleted speaker: ${speakerId}`);
+            return { success: true, speakerId };
           } else {
             const errorData = await response.json().catch(() => ({}));
             const speaker = speakers.find(s => s.id === speakerId);
-            errors.push(`${speaker?.name || speakerId}: ${errorData.message || "Failed to delete"}`);
+            const errorMsg = `${speaker?.name || speakerId}: ${errorData.message || errorData.error || "Failed to delete"}`;
+            errors.push(errorMsg);
+            console.error(`[Delete Selected] Failed to delete speaker ${speakerId}:`, errorData);
+            return { success: false, speakerId, error: errorMsg };
           }
         } catch (err) {
           const speaker = speakers.find(s => s.id === speakerId);
-          errors.push(`${speaker?.name || speakerId}: ${err instanceof Error ? err.message : "Unknown error"}`);
+          const errorMsg = `${speaker?.name || speakerId}: ${err instanceof Error ? err.message : "Unknown error"}`;
+          errors.push(errorMsg);
+          console.error(`[Delete Selected] Error deleting speaker ${speakerId}:`, err);
+          return { success: false, speakerId, error: errorMsg };
         }
-      }
+      });
+
+      // Wait for all deletions to complete
+      await Promise.all(deletePromises);
+
+      console.log(`[Delete Selected] Completed: ${deleted} deleted, ${errors.length} errors`);
 
       // Reload speakers list
       await loadSpeakers();
@@ -340,13 +360,13 @@ export default function SettingsPage() {
       // Show results
       let message = `Deleted ${deleted} speaker(s)`;
       if (errors.length > 0) {
-        message += `\n\nErrors: ${errors.length}`;
+        message += `\n\nErrors (${errors.length}):\n${errors.slice(0, 5).join('\n')}${errors.length > 5 ? `\n... and ${errors.length - 5} more` : ''}`;
         console.error("Delete errors:", errors);
       }
       alert(message);
     } catch (err) {
       console.error("Error deleting selected speakers:", err);
-      alert("Failed to delete selected speakers");
+      alert(`Failed to delete selected speakers: ${err instanceof Error ? err.message : "Unknown error"}`);
     }
   };
 
@@ -396,6 +416,53 @@ export default function SettingsPage() {
   const handleImportExcel = async () => {
     if (!importFile || !user) return;
 
+    // Helper function to clean individual names
+    const cleanName = (name: string): string => {
+      if (!name) return '';
+      
+      // Trim and remove extra whitespace
+      let cleaned = name.trim();
+      
+      // Remove leading/trailing punctuation that's not part of the name (but keep apostrophes in names like O'Brien)
+      cleaned = cleaned.replace(/^[^\w']+|[^\w']+$/g, '');
+      
+      // Remove common prefixes/suffixes that might be formatting artifacts
+      cleaned = cleaned.replace(/^(mr|mrs|ms|dr|prof|rev)\.?\s+/i, '');
+      
+      // Only return if the cleaned name has at least one letter
+      return /[a-zA-Z]/.test(cleaned) ? cleaned : '';
+    };
+    
+    // Helper function to process a name item (handles "Last, First" format and other separators)
+    const processNameItem = (item: string, namesArray: string[]) => {
+      if (!item || !item.trim()) return;
+      
+      // Check if this looks like a "Last, First" format (single comma with text before and after)
+      // Pattern: word(s), word(s) - but not multiple names separated by commas
+      const lastFirstPattern = /^[^,]+,\s*[^,]+$/;
+      if (lastFirstPattern.test(item.trim())) {
+        // This is a single name in "Last, First" format - keep it as one name
+        const cleaned = cleanName(item);
+        if (cleaned) {
+          namesArray.push(cleaned);
+        }
+        return;
+      }
+      
+      // Split by common separators (comma, semicolon, pipe, or multiple spaces)
+      // Only split if there are multiple separators or if it's not a "Last, First" pattern
+      const separators = /[,;|]|\s{2,}/;
+      if (separators.test(item)) {
+        const split = item.split(separators).map(n => cleanName(n)).filter(n => n.length > 0);
+        namesArray.push(...split);
+      } else {
+        const cleaned = cleanName(item);
+        if (cleaned) {
+          namesArray.push(cleaned);
+        }
+      }
+    };
+
     try {
       setImportingSpeakers(true);
       setError(null);
@@ -423,36 +490,81 @@ export default function SettingsPage() {
             }
           }
         }
+      } else if (fileExtension === 'txt') {
+        // Handle plain text files
+        const textDecoder = new TextDecoder('utf-8');
+        let text = textDecoder.decode(arrayBuffer);
+        
+        // Replace common special characters and clean up text
+        text = text.replace(/\u00A0/g, ' '); // Replace non-breaking spaces
+        text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n'); // Normalize line endings
+        
+        // Split by lines and process
+        const lines = text.split('\n');
+        
+        for (const line of lines) {
+          let cleanedLine = line.trim();
+          
+          // Skip empty lines
+          if (!cleanedLine) continue;
+          
+          // Skip header-like lines (case insensitive, with or without punctuation)
+          const headerPatterns = /^(name|speaker|preacher|member)[\s:]*$/i;
+          if (headerPatterns.test(cleanedLine)) continue;
+          
+          // Process the line (handles "Last, First" format and other separators)
+          processNameItem(cleanedLine, names);
+        }
       } else if (fileExtension === 'docx') {
         // Handle Word documents
         const mammoth = await import("mammoth");
         const result = await mammoth.extractRawText({ arrayBuffer });
-        const text = result.value;
+        let text = result.value;
         
-        // Split by lines and extract names
-        const lines = text.split(/\r?\n/).map(line => line.trim()).filter(line => line.length > 0);
+        // Replace common special characters and clean up text
+        // Replace non-breaking spaces with regular spaces
+        text = text.replace(/\u00A0/g, ' ');
+        // Replace multiple spaces/tabs with single space
+        text = text.replace(/[\s\t]+/g, ' ');
+        // Replace common list markers (bullet points, numbers, dashes)
+        text = text.replace(/^[\s]*[•·▪▫◦‣⁃]\s*/gm, '');
+        text = text.replace(/^[\s]*\d+[.)]\s*/gm, '');
+        text = text.replace(/^[\s]*[-–—]\s*/gm, '');
+        
+        // Split by lines and process
+        const lines = text.split(/\r?\n/);
         
         for (const line of lines) {
-          // Skip header-like lines
-          if (!["name", "speaker", "preacher", "NAME", "SPEAKER", "PREACHER"].includes(line.toLowerCase())) {
-            // If line contains multiple names separated by commas, split them
-            if (line.includes(',')) {
-              const splitNames = line.split(',').map(n => n.trim()).filter(n => n.length > 0);
-              names.push(...splitNames);
-            } else {
-              names.push(line);
+          let cleanedLine = line.trim();
+          
+          // Skip empty lines
+          if (!cleanedLine) continue;
+          
+          // Skip header-like lines (case insensitive, with or without punctuation)
+          const headerPatterns = /^(name|speaker|preacher|member)[\s:]*$/i;
+          if (headerPatterns.test(cleanedLine)) continue;
+          
+          // Handle tabs (common in tables) - split by tabs first
+          if (cleanedLine.includes('\t')) {
+            const tabSeparated = cleanedLine.split('\t').map(s => s.trim()).filter(s => s.length > 0);
+            for (const item of tabSeparated) {
+              // Each tab-separated item might contain multiple names
+              processNameItem(item, names);
             }
+          } else {
+            // Process the line as a whole
+            processNameItem(cleanedLine, names);
           }
         }
       } else {
-        alert("Unsupported file type. Please upload an Excel file (.xlsx, .xls) or Word document (.docx)");
+        alert("Unsupported file type. Please upload an Excel file (.xlsx, .xls), Word document (.docx), or text file (.txt)");
         setImportFile(null);
         setImportingSpeakers(false);
         return;
       }
 
       if (names.length === 0) {
-        alert("No speaker names found in the file. Please ensure the file contains speaker names (one per line for Word docs, or in the first column for Excel).");
+        alert("No speaker names found in the file. Please ensure the file contains speaker names (one per line for Word docs/text files, or in the first column for Excel).");
         setImportFile(null);
         return;
       }
@@ -575,7 +687,7 @@ export default function SettingsPage() {
     } catch (err) {
       console.error("Import error:", err);
       setError(err instanceof Error ? err.message : "Failed to import speakers");
-      alert(err instanceof Error ? err.message : "Failed to import speakers. Make sure the file is a valid Excel file (.xlsx or .xls) or Word document (.docx)");
+        alert(err instanceof Error ? err.message : "Failed to import speakers. Make sure the file is a valid Excel file (.xlsx or .xls), Word document (.docx), or text file (.txt)");
     } finally {
       setImportingSpeakers(false);
     }
@@ -1377,7 +1489,7 @@ export default function SettingsPage() {
                   Import Speakers from File
                 </label>
                 <p className="text-xs text-gray-500 mb-3">
-                  Upload an Excel file (.xlsx or .xls) with speaker names in the first column, or a Word document (.docx) with one name per line. Duplicate names will prompt you to overwrite or skip.
+                  Upload an Excel file (.xlsx or .xls) with speaker names in the first column, a Word document (.docx) with one name per line, or a text file (.txt) with one name per line. Names can be in "Last, First" format or separated by commas. Duplicate names will prompt you to overwrite or skip.
                 </p>
                 <div className="flex gap-2">
                   <input
