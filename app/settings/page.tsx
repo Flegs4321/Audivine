@@ -61,6 +61,7 @@ export default function SettingsPage() {
   const [importFile, setImportFile] = useState<File | null>(null);
   const [taggedFeatureAvailable, setTaggedFeatureAvailable] = useState<boolean | null>(null);
   const [selectedSpeakers, setSelectedSpeakers] = useState<Set<string>>(new Set());
+  const [speakersSectionExpanded, setSpeakersSectionExpanded] = useState(false);
 
   // Redirect to login if not authenticated
   useEffect(() => {
@@ -1450,11 +1451,21 @@ export default function SettingsPage() {
 
           {/* Speakers Section */}
           <div className="bg-white rounded-lg shadow p-6">
-            <h3 className="text-xl font-semibold mb-4">Speakers/Preachers</h3>
-            <div className="space-y-4">
-              <p className="text-sm text-gray-600 mb-4">
-                Manage your list of speakers. These will be available when editing sermons.
-              </p>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-xl font-semibold">Speakers/Preachers</h3>
+              <button
+                type="button"
+                onClick={() => setSpeakersSectionExpanded(!speakersSectionExpanded)}
+                className="px-4 py-2 text-sm text-gray-700 bg-gray-100 hover:bg-gray-200 rounded border border-gray-300 transition-colors"
+              >
+                {speakersSectionExpanded ? "▼ Hide" : "▶ Show"} ({speakers.length})
+              </button>
+            </div>
+            {speakersSectionExpanded && (
+              <div className="space-y-4">
+                <p className="text-sm text-gray-600 mb-4">
+                  Manage your list of speakers. These will be available when editing sermons.
+                </p>
               
               {/* Add New Speaker */}
               <div className="flex gap-2">
@@ -1619,7 +1630,8 @@ export default function SettingsPage() {
                   </div>
                 </div>
               )}
-            </div>
+              </div>
+            )}
           </div>
 
           {/* Church Name Section */}

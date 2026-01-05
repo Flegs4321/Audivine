@@ -12,6 +12,7 @@ export interface RecordingMetadata {
     text: string;
     timestampMs: number;
     isFinal: boolean;
+    speaker?: string; // Optional speaker name for this chunk
   }>;
   mimeType: string;
   fileSize: number; // in bytes

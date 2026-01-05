@@ -18,6 +18,10 @@ function ReviewPageContent() {
   const { user } = useAuth();
 
   const [sections, setSections] = useState<EditableSection[]>([]);
+  const [transcriptChunks, setTranscriptChunks] = useState<Array<{ text: string; timestampMs: number; isFinal?: boolean; speaker?: string }>>([]);
+  const [speakers, setSpeakers] = useState<Array<{ id: string; name: string }>>([]);
+  const [loadingSpeakers, setLoadingSpeakers] = useState(false);
+  const [taggingSpeaker, setTaggingSpeaker] = useState<Record<string, boolean>>({}); // Track which section is being tagged
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -75,6 +79,11 @@ function ReviewPageContent() {
           throw new Error("Recording not found");
         }
 
+        // Store transcript chunks for speaker checking and updating
+        if (recording.transcript_chunks && Array.isArray(recording.transcript_chunks)) {
+          setTranscriptChunks(recording.transcript_chunks);
+        }
+
         // Check if we have sections already (from analysis)
         // If segments exist and have label property, use them as sections
         let loadedSections: FinalSection[] = [];
@@ -90,9 +99,27 @@ function ReviewPageContent() {
 
         // If no sections, convert transcript_chunks into a simple section
         if (loadedSections.length === 0 && recording.transcript_chunks && Array.isArray(recording.transcript_chunks) && recording.transcript_chunks.length > 0) {
-          // Combine all transcript chunks into one section
+          // Combine all transcript chunks into one section, including speaker information
           const chunks = recording.transcript_chunks;
-          const fullText = chunks.map((chunk: any) => chunk.text).join(" ");
+          let fullText = "";
+          let currentSpeaker: string | null = null;
+          
+          for (const chunk of chunks) {
+            // If this chunk has a speaker and it's different from current, add speaker label
+            if (chunk.speaker && chunk.speaker !== currentSpeaker) {
+              // Check if this is a tag line (already has speaker info in text)
+              if (!chunk.text.startsWith("[") || (!chunk.text.includes(" sharing:]") && !chunk.text.includes(" speaking:]"))) {
+                fullText += `\n[${chunk.speaker}]: `;
+              }
+              currentSpeaker = chunk.speaker;
+            } else if (!chunk.speaker && currentSpeaker) {
+              // Speaker ended, reset
+              currentSpeaker = null;
+            }
+            
+            fullText += chunk.text + " ";
+          }
+          
           const startMs = chunks[0]?.timestampMs || 0;
           const endMs = chunks[chunks.length - 1]?.timestampMs || (recording.duration * 1000);
 
@@ -164,6 +191,46 @@ function ReviewPageContent() {
     };
 
     checkOpenAIKey();
+  }, [user]);
+
+  // Load speakers list
+  useEffect(() => {
+    const loadSpeakers = async () => {
+      if (!user) {
+        setSpeakers([]);
+        return;
+      }
+
+      try {
+        setLoadingSpeakers(true);
+        const { supabase } = await import("@/lib/supabase/client");
+        const { data: { session } } = await supabase.auth.getSession();
+
+        if (!session?.access_token) {
+          setLoadingSpeakers(false);
+          return;
+        }
+
+        const response = await fetch("/api/speakers", {
+          headers: {
+            "Authorization": `Bearer ${session.access_token}`,
+          },
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          if (data.speakers && Array.isArray(data.speakers)) {
+            setSpeakers(data.speakers.map((s: any) => ({ id: s.id, name: s.name })));
+          }
+        }
+      } catch (err) {
+        console.error("Error loading speakers:", err);
+      } finally {
+        setLoadingSpeakers(false);
+      }
+    };
+
+    loadSpeakers();
   }, [user]);
 
   const formatTime = (ms: number): string => {
@@ -321,6 +388,178 @@ function ReviewPageContent() {
     setSections((prev) =>
       prev.map((s) => (s.id === id ? { ...s, ...updates } : s))
     );
+  };
+
+  // Check if a section has any speaker tagged
+  const sectionHasSpeaker = (section: EditableSection): boolean => {
+    if (!transcriptChunks.length) return false;
+    
+    // Find chunks within this section's time range
+    const sectionChunks = transcriptChunks.filter(
+      (chunk) => chunk.timestampMs >= section.startMs && 
+                 (section.endMs === null || chunk.timestampMs <= section.endMs)
+    );
+    
+    // Check if any chunk has a speaker
+    return sectionChunks.some((chunk) => chunk.speaker && chunk.speaker.trim() !== "");
+  };
+
+  // Tag a speaker for a section retroactively
+  const handleTagSpeaker = async (sectionId: string, speakerName: string) => {
+    if (!recordingId || !speakerName.trim()) return;
+
+    const section = sections.find((s) => s.id === sectionId);
+    if (!section) return;
+
+    try {
+      setTaggingSpeaker((prev) => ({ ...prev, [sectionId]: true }));
+
+      const { supabase } = await import("@/lib/supabase/client");
+      const { data: { session } } = await supabase.auth.getSession();
+
+      if (!session?.access_token) {
+        throw new Error("Not authenticated");
+      }
+
+      // Find chunks within this section's time range
+      const sectionChunks = transcriptChunks.filter(
+        (chunk) => chunk.timestampMs >= section.startMs && 
+                   (section.endMs === null || chunk.timestampMs <= section.endMs)
+      );
+
+      if (sectionChunks.length === 0) {
+        alert("No transcript chunks found in this section");
+        return;
+      }
+
+      // Update chunks with speaker information
+      const updatedChunks = transcriptChunks.map((chunk) => {
+        // If chunk is in this section and doesn't already have a speaker, add it
+        if (
+          chunk.timestampMs >= section.startMs &&
+          (section.endMs === null || chunk.timestampMs <= section.endMs) &&
+          !chunk.speaker
+        ) {
+          return { ...chunk, speaker: speakerName };
+        }
+        return chunk;
+      });
+
+      // Also add a speaker tag marker at the start of the section if it doesn't exist
+      const hasTagMarker = sectionChunks.some(
+        (chunk) =>
+          chunk.text.startsWith("[") &&
+          (chunk.text.includes(" sharing:]") || chunk.text.includes(" speaking:]"))
+      );
+
+      if (!hasTagMarker) {
+        // Find the first chunk in the section and add a tag marker before it
+        const firstChunkIndex = transcriptChunks.findIndex(
+          (chunk) => chunk.timestampMs >= section.startMs
+        );
+        if (firstChunkIndex >= 0) {
+          const tagText = section.label === "Sermon" 
+            ? `[${speakerName} speaking:]` 
+            : `[${speakerName} sharing:]`;
+          const tagChunk = {
+            text: tagText,
+            timestampMs: section.startMs,
+            isFinal: true,
+            speaker: speakerName,
+          };
+          updatedChunks.splice(firstChunkIndex, 0, tagChunk);
+        }
+      }
+
+      // Update recording in database
+      const response = await fetch(`/api/recordings/${recordingId}/transcript-chunks`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          transcript_chunks: updatedChunks,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.message || errorData.error || "Failed to update transcript chunks");
+      }
+
+      // Update local state
+      setTranscriptChunks(updatedChunks);
+
+      // Reload sections to reflect updated transcript
+      const recordResponse = await fetch(`/api/recordings/${recordingId}`, {
+        headers: {
+          "Authorization": `Bearer ${session.access_token}`,
+        },
+      });
+
+      if (recordResponse.ok) {
+        const recordData = await recordResponse.json();
+        const recording = recordData.recording;
+
+        if (recording.transcript_chunks) {
+          setTranscriptChunks(recording.transcript_chunks);
+        }
+
+        // Rebuild sections with updated transcript
+        if (recording.segments && Array.isArray(recording.segments) && recording.segments.length > 0) {
+          const firstSegment = recording.segments[0];
+          if (firstSegment.label) {
+            // These are already FinalSection objects, but we need to rebuild text with speaker info
+            const updatedSections = recording.segments.map((s: FinalSection, i: number) => {
+              // Rebuild text from transcript chunks with speaker information
+              if (recording.transcript_chunks && Array.isArray(recording.transcript_chunks)) {
+                const sectionChunks = recording.transcript_chunks.filter(
+                  (chunk: any) => chunk.timestampMs >= s.startMs && 
+                                 (s.endMs === null || chunk.timestampMs <= s.endMs)
+                );
+                
+                let fullText = "";
+                let currentSpeaker: string | null = null;
+                
+                for (const chunk of sectionChunks) {
+                  if (chunk.speaker && chunk.speaker !== currentSpeaker) {
+                    if (!chunk.text.startsWith("[") || (!chunk.text.includes(" sharing:]") && !chunk.text.includes(" speaking:]"))) {
+                      fullText += `\n[${chunk.speaker}]: `;
+                    }
+                    currentSpeaker = chunk.speaker;
+                  } else if (!chunk.speaker && currentSpeaker) {
+                    currentSpeaker = null;
+                  }
+                  
+                  fullText += chunk.text + " ";
+                }
+                
+                return {
+                  ...s,
+                  id: `section-${i}`,
+                  text: fullText.trim(),
+                };
+              }
+              
+              return {
+                ...s,
+                id: `section-${i}`,
+              };
+            });
+            
+            setSections(updatedSections);
+          }
+        }
+      }
+
+      alert(`Successfully tagged ${speakerName} for ${section.label} section`);
+    } catch (err) {
+      console.error("Error tagging speaker:", err);
+      alert(err instanceof Error ? err.message : "Failed to tag speaker");
+    } finally {
+      setTaggingSpeaker((prev) => ({ ...prev, [sectionId]: false }));
+    }
   };
 
   const setActiveTab = (sectionId: string, tab: "transcript" | "summary") => {
@@ -893,6 +1132,57 @@ function ReviewPageContent() {
                   </button>
                 )}
               </div>
+
+              {/* Speaker Tagging Notice for Sharing/Sermon sections */}
+              {(section.label === "Sharing" || section.label === "Sermon") && !sectionHasSpeaker(section) && (
+                <div className="mb-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+                  <div className="flex items-start justify-between">
+                    <div className="flex-1">
+                      <p className="text-sm font-medium text-yellow-800 mb-2">
+                        ⚠️ No speaker was tagged during {section.label.toLowerCase()}
+                      </p>
+                      <p className="text-xs text-yellow-700 mb-3">
+                        Would you like to add a speaker from your speaker list? This will tag all transcript chunks in this section.
+                      </p>
+                      {speakers.length > 0 ? (
+                        <div className="flex gap-2">
+                          <select
+                            id={`speaker-select-${section.id}`}
+                            className="flex-1 px-3 py-2 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                            defaultValue=""
+                          >
+                            <option value="">Select a speaker...</option>
+                            {speakers.map((speaker) => (
+                              <option key={speaker.id} value={speaker.name}>
+                                {speaker.name}
+                              </option>
+                            ))}
+                          </select>
+                          <button
+                            onClick={() => {
+                              const select = document.getElementById(`speaker-select-${section.id}`) as HTMLSelectElement;
+                              const speakerName = select?.value;
+                              if (speakerName) {
+                                handleTagSpeaker(section.id, speakerName);
+                              } else {
+                                alert("Please select a speaker");
+                              }
+                            }}
+                            disabled={taggingSpeaker[section.id] || loadingSpeakers}
+                            className="px-4 py-2 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            {taggingSpeaker[section.id] ? "Tagging..." : "Tag Speaker"}
+                          </button>
+                        </div>
+                      ) : (
+                        <p className="text-xs text-yellow-600">
+                          No speakers available. Add speakers in Settings first.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {/* Tabs */}
               <div className="mb-4">

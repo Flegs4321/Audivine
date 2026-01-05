@@ -97,11 +97,29 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      // Combine all transcript chunks into full text
+      // Combine all transcript chunks into full text, including speaker information
       if (recording.transcript_chunks && Array.isArray(recording.transcript_chunks)) {
-        fullTranscript = recording.transcript_chunks
-          .map((chunk: any) => chunk.text)
-          .join(" ");
+        // Group chunks by speaker and format with speaker names
+        let transcriptWithSpeakers = "";
+        let currentSpeaker: string | null = null;
+        
+        for (const chunk of recording.transcript_chunks) {
+          // If this chunk has a speaker and it's different from current, add speaker label
+          if (chunk.speaker && chunk.speaker !== currentSpeaker) {
+            // Check if this is a tag line (already has speaker info in text)
+            if (!chunk.text.startsWith("[") || (!chunk.text.includes(" sharing:]") && !chunk.text.includes(" speaking:]"))) {
+              transcriptWithSpeakers += `\n[${chunk.speaker}]: `;
+            }
+            currentSpeaker = chunk.speaker;
+          } else if (!chunk.speaker && currentSpeaker) {
+            // Speaker ended, reset
+            currentSpeaker = null;
+          }
+          
+          transcriptWithSpeakers += chunk.text + " ";
+        }
+        
+        fullTranscript = transcriptWithSpeakers.trim();
       } else if (recording.segments && Array.isArray(recording.segments)) {
         // Fallback to segments if transcript_chunks not available
         fullTranscript = recording.segments
@@ -127,10 +145,12 @@ export async function POST(request: NextRequest) {
     let prompt: string;
     if (userSettings.prompt && userSettings.prompt.trim().length > 0) {
       // Use only the custom prompt and transcript
-      prompt = `${userSettings.prompt.trim()}\n\nTranscript:\n${fullTranscript.substring(0, 16000)}`;
+      prompt = `${userSettings.prompt.trim()}\n\nTranscript (with speaker names indicated by [Speaker Name]:):\n${fullTranscript.substring(0, 16000)}`;
     } else {
       // Fallback to default prompt if no custom prompt
       prompt = `You are creating a summary of a church service sermon to send to all church members. 
+
+The transcript includes speaker names indicated by [Speaker Name]: before their words. Use this information to identify who is speaking during different parts of the service (sharing time, sermon, etc.).
 
 Please create a well-formatted, engaging summary that includes:
 1. A compelling title for the sermon
@@ -139,10 +159,11 @@ Please create a well-formatted, engaging summary that includes:
 4. Key points or takeaways (5-7 bullet points)
 5. Scripture references mentioned (if any)
 6. A closing thought or call to action (1-2 sentences)
+7. If multiple speakers are mentioned, note who spoke during sharing time and who delivered the sermon
 
 Make it warm, accessible, and inspiring. Format it in a way that's easy to read and share.
 
-Sermon Transcript:
+Sermon Transcript (with speaker names):
 ${fullTranscript.substring(0, 16000)}`;
     }
 

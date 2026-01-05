@@ -111,6 +111,7 @@ function RecorderPageContent() {
   const [segments, setSegments] = useState<Segment[]>([]);
   const [elapsedTime, setElapsedTime] = useState(0); // in seconds
   const [transcriptChunks, setTranscriptChunks] = useState<TranscriptChunk[]>([]);
+  const [currentSpeaker, setCurrentSpeaker] = useState<string | null>(null); // Track current speaker
   const [members, setMembers] = useState<Array<{ id: string; name: string }>>([]);
   const [loadingMembers, setLoadingMembers] = useState(false);
   const [showMemberDropdown, setShowMemberDropdown] = useState(false);
@@ -394,6 +395,7 @@ function RecorderPageContent() {
       segmentsRef.current = [];
       transcriptChunksRef.current = [];
       elapsedTimeRef.current = 0;
+      setCurrentSpeaker(null); // Reset current speaker
       // Reset seen final texts to prevent duplicates from previous recordings
       seenFinalTextsRef.current.clear();
       
@@ -589,11 +591,15 @@ function RecorderPageContent() {
 
     const currentMs = getCurrentElapsedMs();
     
+    // Set this member as the current speaker for subsequent chunks
+    setCurrentSpeaker(memberName);
+    
     // Insert member name as a special chunk in the transcript
     const memberChunk: TranscriptChunk = {
       text: `[${memberName} sharing:]`,
       timestampMs: currentMs,
       isFinal: true,
+      speaker: memberName,
     };
 
     setTranscriptChunks((prev) => {
@@ -623,11 +629,15 @@ function RecorderPageContent() {
 
     const currentMs = getCurrentElapsedMs();
     
+    // Set this speaker as the current speaker for subsequent chunks
+    setCurrentSpeaker(speakerName);
+    
     // Insert speaker name as a special chunk in the transcript
     const speakerChunk: TranscriptChunk = {
       text: `[${speakerName} speaking:]`,
       timestampMs: currentMs,
       isFinal: true,
+      speaker: speakerName,
     };
 
     setTranscriptChunks((prev) => {
@@ -664,34 +674,40 @@ function RecorderPageContent() {
     transcription.onTextChunk((chunk) => {
       if (!isMounted) return;
 
+      // Add current speaker to chunk if one is set
+      const chunkWithSpeaker: TranscriptChunk = {
+        ...chunk,
+        speaker: currentSpeaker || undefined,
+      };
+
       setTranscriptChunks((prev) => {
         // If it's an interim result, replace the last interim chunk
-        if (!chunk.isFinal) {
+        if (!chunkWithSpeaker.isFinal) {
           // Replace the last chunk if it's also interim
           if (prev.length > 0 && !prev[prev.length - 1].isFinal) {
-            return [...prev.slice(0, -1), chunk];
+            return [...prev.slice(0, -1), chunkWithSpeaker];
           }
           // Otherwise add as new interim chunk (but only if we haven't seen this as final)
-          if (!seenFinalTextsRef.current.has(chunk.text)) {
-            return [...prev, chunk];
+          if (!seenFinalTextsRef.current.has(chunkWithSpeaker.text)) {
+            return [...prev, chunkWithSpeaker];
           }
           return prev;
         }
         
         // For final chunks, check if we've already added this exact text
         // This prevents duplicates from the Web Speech API
-        if (seenFinalTextsRef.current.has(chunk.text)) {
+        if (seenFinalTextsRef.current.has(chunkWithSpeaker.text)) {
           // Already have this final chunk, don't add again
-          console.log("[Recorder] Skipping duplicate final chunk:", chunk.text);
+          console.log("[Recorder] Skipping duplicate final chunk:", chunkWithSpeaker.text);
           return prev;
         }
         
         // Mark as seen
-        seenFinalTextsRef.current.add(chunk.text);
+        seenFinalTextsRef.current.add(chunkWithSpeaker.text);
         
         // Remove any interim chunks that might overlap with this final chunk
         // and add the final chunk
-        const updated = [...prev.filter(c => c.isFinal || c.text !== chunk.text), chunk];
+        const updated = [...prev.filter(c => c.isFinal || c.text !== chunkWithSpeaker.text), chunkWithSpeaker];
         transcriptChunksRef.current = updated;
         
         // Limit stored chunks to prevent memory issues (but keep more than displayed for upload)
@@ -836,18 +852,48 @@ function RecorderPageContent() {
                 console.log("[Upload] Transcription chunks:", transcribeData.chunks?.length || 0);
                 
                 // Replace browser transcription with more accurate Whisper transcription
+                // But preserve speaker information from browser chunks
                 if (transcribeData.chunks && Array.isArray(transcribeData.chunks)) {
-                  const whisperChunks = transcribeData.chunks.map((chunk: any) => ({
-                    text: chunk.text,
-                    timestampMs: chunk.timestampMs || 0,
-                    isFinal: true,
-                  }));
+                  // Get current browser chunks with speaker info
+                  const browserChunks = transcriptChunksRef.current;
                   
-                  // Update the transcript display with Whisper results
-                  setTranscriptChunks(whisperChunks);
-                  transcriptChunksRef.current = whisperChunks;
+                  // Create a map of timestamp ranges to speakers
+                  // For each browser chunk with a speaker, find Whisper chunks in the same time range
+                  const whisperChunks = transcribeData.chunks.map((chunk: any) => {
+                    const whisperTimestamp = chunk.timestampMs || 0;
+                    
+                    // Find the most recent browser chunk with a speaker before or at this timestamp
+                    let speaker: string | undefined;
+                    for (let i = browserChunks.length - 1; i >= 0; i--) {
+                      const browserChunk = browserChunks[i];
+                      if (browserChunk.speaker && browserChunk.timestampMs <= whisperTimestamp) {
+                        speaker = browserChunk.speaker;
+                        break;
+                      }
+                    }
+                    
+                    return {
+                      text: chunk.text,
+                      timestampMs: whisperTimestamp,
+                      isFinal: true,
+                      speaker: speaker,
+                    };
+                  });
                   
-                  console.log("[Upload] Replaced browser transcription with Whisper transcription");
+                  // Also preserve any speaker tag chunks from browser transcription
+                  const speakerTagChunks = browserChunks.filter(chunk => 
+                    chunk.speaker && (chunk.text.startsWith("[") && (chunk.text.includes(" sharing:]") || chunk.text.includes(" speaking:]")))
+                  );
+                  
+                  // Merge speaker tags with Whisper chunks, maintaining chronological order
+                  const allChunks = [...whisperChunks, ...speakerTagChunks]
+                    .sort((a, b) => a.timestampMs - b.timestampMs);
+                  
+                  // Update the transcript display with merged results
+                  setTranscriptChunks(allChunks);
+                  transcriptChunksRef.current = allChunks;
+                  
+                  console.log("[Upload] Replaced browser transcription with Whisper transcription, preserving speaker info");
                 } else {
                   console.warn("[Upload] Whisper transcription completed but no chunks returned");
                 }
@@ -1462,9 +1508,11 @@ function RecorderPageContent() {
                 ) : (
                   <div className="space-y-3">
                     {transcriptChunks.slice(-MAX_DISPLAYED_TRANSCRIPT_CHUNKS).map((chunk, index) => {
-                      // Check if this is a member tag (starts with [ and ends with sharing:])
-                      const isMemberTag = chunk.text.startsWith("[") && chunk.text.includes(" sharing:]");
+                      // Check if this is a member tag (starts with [ and ends with sharing:] or speaking:])
+                      const isMemberTag = chunk.text.startsWith("[") && (chunk.text.includes(" sharing:]") || chunk.text.includes(" speaking:]"));
+                      const isSermonTag = chunk.text.startsWith("[") && chunk.text.includes(" speaking:]");
                       const isLastChunk = index === transcriptChunks.slice(-MAX_DISPLAYED_TRANSCRIPT_CHUNKS).length - 1;
+                      const hasSpeaker = chunk.speaker && !isMemberTag; // Show speaker name if present and not a tag line
                       
                       return (
                         <div
@@ -1472,19 +1520,38 @@ function RecorderPageContent() {
                           ref={isLastChunk ? transcriptEndRef : null}
                           className={`text-sm leading-relaxed animate-fade-in ${
                             isMemberTag
-                              ? "bg-blue-100 border-l-4 border-blue-500 pl-3 py-2 rounded"
+                              ? isSermonTag
+                                ? "bg-purple-100 border-l-4 border-purple-500 pl-3 py-2 rounded"
+                                : "bg-blue-100 border-l-4 border-blue-500 pl-3 py-2 rounded"
+                              : hasSpeaker
+                              ? "bg-green-50 border-l-2 border-green-300 pl-2 py-1"
                               : chunk.isFinal
                               ? "text-gray-700"
                               : "text-gray-500 italic"
                           }`}
                         >
                           <div className={`text-xs mb-1 font-mono ${
-                            isMemberTag ? "text-blue-700 font-semibold" : "text-gray-400"
+                            isMemberTag 
+                              ? isSermonTag 
+                                ? "text-purple-700 font-semibold" 
+                                : "text-blue-700 font-semibold" 
+                              : hasSpeaker
+                              ? "text-green-700 font-semibold"
+                              : "text-gray-400"
                           }`}>
                             {formatTimeMs(chunk.timestampMs)}
+                            {hasSpeaker && (
+                              <span className="ml-2 text-green-600">• {chunk.speaker}</span>
+                            )}
                           </div>
                           <div className={`text-sm ${
-                            isMemberTag ? "text-blue-900 font-semibold" : ""
+                            isMemberTag 
+                              ? isSermonTag
+                                ? "text-purple-900 font-semibold"
+                                : "text-blue-900 font-semibold" 
+                              : hasSpeaker
+                              ? "text-gray-800"
+                              : ""
                           }`}>
                             {chunk.text}
                           </div>

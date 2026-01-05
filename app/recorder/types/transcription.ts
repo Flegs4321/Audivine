@@ -2,6 +2,7 @@ export interface TranscriptChunk {
   text: string;
   timestampMs: number;
   isFinal?: boolean;
+  speaker?: string; // Name of the speaker for this chunk
 }
 
 export interface TranscriptionProvider {
