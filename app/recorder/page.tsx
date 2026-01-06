@@ -861,23 +861,32 @@ function RecorderPageContent() {
     transcription.onTextChunk((chunk) => {
       if (!isMounted) return;
 
-      // Use ref for current speaker to ensure we have the latest value
-      const speaker = currentSpeakerRef.current || currentSpeaker || undefined;
+      // Use ref for current speaker to ensure we have the latest value (ref is always current)
+      const speaker = currentSpeakerRef.current || undefined;
+      
+      console.log(`[Recorder] Processing chunk - speaker: ${speaker || 'NONE'}, ref: ${currentSpeakerRef.current || 'NONE'}, text: "${chunk.text.substring(0, 50)}..."`);
       
       // Format text with speaker name prefix if speaker is active
       // Format: "Speaker - text" instead of "[Speaker]: text"
       let formattedText = chunk.text;
       if (speaker && !chunk.speakerTag) {
-        // Check if the text already has a speaker tag (either old format [Speaker]: or new format Speaker -)
-        const alreadyHasSpeakerTag = /^\[[^\]]+\]:\s*/.test(chunk.text) || /^[^-]+\s*-\s*/.test(chunk.text);
-        if (!alreadyHasSpeakerTag) {
+        // Check if the text already has a speaker tag
+        // Old format: [Speaker]: text
+        // New format: Speaker - text (but be careful - this pattern could match regular text with dashes)
+        // Better: Check if it starts with a known speaker name pattern or old format
+        const hasOldFormat = /^\[[^\]]+\]:\s*/.test(chunk.text);
+        // For new format, check if it looks like "Name - " at the start (name followed by space-dash-space)
+        // This is more specific than just any dash
+        const hasNewFormat = /^[A-Za-z][A-Za-z\s]+\s+-\s+/.test(chunk.text);
+        
+        if (!hasOldFormat && !hasNewFormat) {
           formattedText = `${speaker} - ${chunk.text}`;
-          console.log(`[Recorder] Adding speaker prefix: ${speaker} - ${chunk.text.substring(0, 50)}...`);
+          console.log(`[Recorder] ✓ Added speaker prefix: "${formattedText.substring(0, 60)}..."`);
         } else {
-          console.log(`[Recorder] Text already has speaker tag: ${chunk.text.substring(0, 50)}...`);
+          console.log(`[Recorder] ✗ Text already has speaker tag (old: ${hasOldFormat}, new: ${hasNewFormat}): ${chunk.text.substring(0, 50)}...`);
         }
       } else if (!speaker && !chunk.speakerTag) {
-        console.log(`[Recorder] No speaker set for chunk: ${chunk.text.substring(0, 50)}...`);
+        console.log(`[Recorder] ⚠ No speaker set for chunk: ${chunk.text.substring(0, 50)}...`);
       }
       
       // Add current speaker to chunk if one is set
@@ -960,7 +969,7 @@ function RecorderPageContent() {
     return () => {
       isMounted = false;
     };
-  }, [transcription.isAvailable, transcription.onTextChunk, currentSpeaker]);
+  }, [transcription.isAvailable, transcription.onTextChunk]);
 
   // Handle automatic section analysis
   const handleAnalyzeSections = async () => {
@@ -1034,16 +1043,15 @@ function RecorderPageContent() {
           startMs: s.startMs,
           endMs: s.endMs,
         })),
-        // Only include browser transcription chunks if using browser method
-        transcriptChunks: currentTranscriptionMethod === "browser" 
-          ? finalTranscriptChunks.map((c) => ({
-              text: c.text,
-              timestampMs: c.timestampMs,
-              isFinal: c.isFinal ?? true,
-              speaker: c.speaker,
-              speakerTag: c.speakerTag,
-            }))
-          : [], // Empty for OpenAI - will be transcribed after upload
+        // Always save browser transcription chunks to preserve speaker information
+        // Even when using OpenAI, we need these chunks so Whisper can preserve speaker tags
+        transcriptChunks: finalTranscriptChunks.map((c) => ({
+          text: c.text,
+          timestampMs: c.timestampMs,
+          isFinal: c.isFinal ?? true,
+          speaker: c.speaker,
+          speakerTag: c.speakerTag,
+        })),
         mimeType,
         fileSize: blob.size,
       };
@@ -1081,60 +1089,17 @@ function RecorderPageContent() {
                 console.log("[Upload] Transcription chunks:", transcribeData.chunks?.length || 0);
                 
                 // Replace browser transcription with more accurate Whisper transcription
-                // But preserve speaker information from browser chunks
+                // The API now preserves speaker information automatically
                 if (transcribeData.chunks && Array.isArray(transcribeData.chunks)) {
-                  // Get current browser chunks with speaker info
-                  const browserChunks = transcriptChunksRef.current;
+                  // Use the chunks returned from the API (they already have speaker info preserved)
+                  const whisperChunks = transcribeData.chunks;
                   
-                  // Create a map of timestamp ranges to speakers
-                  // For each browser chunk with a speaker, find Whisper chunks in the same time range
-                  const whisperChunks = transcribeData.chunks.map((chunk: any) => {
-                    const whisperTimestamp = chunk.timestampMs || 0;
-                    
-                    // Find the most recent browser chunk with a speaker before or at this timestamp
-                    let speaker: string | undefined;
-                    for (let i = browserChunks.length - 1; i >= 0; i--) {
-                      const browserChunk = browserChunks[i];
-                      if (browserChunk.speaker && browserChunk.timestampMs <= whisperTimestamp) {
-                        speaker = browserChunk.speaker;
-                        break;
-                      }
-                    }
-                    
-                    // Format text with speaker name prefix (like browser transcription)
-                    // Format: "Speaker - text" instead of "[Speaker]: text"
-                    let formattedText = chunk.text;
-                    if (speaker) {
-                      // Check if text already has a speaker prefix (old or new format) to avoid double-prefixing
-                      const alreadyHasSpeakerTag = /^\[[^\]]+\]:\s*/.test(chunk.text) || /^[^-]+\s*-\s*/.test(chunk.text);
-                      if (!alreadyHasSpeakerTag) {
-                        formattedText = `${speaker} - ${chunk.text}`;
-                      }
-                    }
-                    
-                    return {
-                      text: formattedText,
-                      timestampMs: whisperTimestamp,
-                      isFinal: true,
-                      speaker: speaker,
-                      speakerTag: false,
-                    };
-                  });
+                  // Update the transcript display with Whisper chunks (already have speaker info)
+                  setTranscriptChunks(whisperChunks);
+                  transcriptChunksRef.current = whisperChunks;
                   
-                  // Also preserve any speaker tag chunks from browser transcription
-                  const speakerTagChunks = browserChunks.filter(chunk => 
-                    chunk.speakerTag === true
-                  );
-                  
-                  // Merge speaker tags with Whisper chunks, maintaining chronological order
-                  const allChunks = [...whisperChunks, ...speakerTagChunks]
-                    .sort((a, b) => a.timestampMs - b.timestampMs);
-                  
-                  // Update the transcript display with merged results
-                  setTranscriptChunks(allChunks);
-                  transcriptChunksRef.current = allChunks;
-                  
-                  console.log("[Upload] Replaced browser transcription with Whisper transcription, preserving speaker info");
+                  console.log("[Upload] Replaced browser transcription with Whisper transcription (speaker info preserved by API)");
+                  console.log("[Upload] Chunks with speakers:", whisperChunks.filter((c: any) => c.speaker).length, "out of", whisperChunks.length);
                 } else {
                   console.warn("[Upload] Whisper transcription completed but no chunks returned");
                 }

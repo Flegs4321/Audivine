@@ -148,6 +148,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Check if already transcribed (idempotency)
+    // Also get existing chunks to preserve speaker information
     const { data: existingRecording } = await supabase
       .from("recordings")
       .select("transcript_chunks, file_path")
@@ -156,18 +157,29 @@ export async function POST(request: NextRequest) {
       .single();
 
     if (existingRecording?.transcript_chunks && Array.isArray(existingRecording.transcript_chunks) && existingRecording.transcript_chunks.length > 0) {
-      // Already transcribed, return existing
-      const transcript = existingRecording.transcript_chunks
-        .map((chunk: any) => chunk.text)
-        .join(" ");
+      // Check if chunks already have Whisper transcription (have timestamps and are final)
+      // If they do, return existing
+      const hasWhisperTranscription = existingRecording.transcript_chunks.some(
+        (chunk: any) => chunk.isFinal && typeof chunk.timestampMs === 'number'
+      );
       
-      return NextResponse.json({
-        success: true,
-        transcript,
-        chunks: existingRecording.transcript_chunks,
-        recordingId,
-      });
+      if (hasWhisperTranscription) {
+        // Already transcribed, return existing
+        const transcript = existingRecording.transcript_chunks
+          .map((chunk: any) => chunk.text)
+          .join(" ");
+        
+        return NextResponse.json({
+          success: true,
+          transcript,
+          chunks: existingRecording.transcript_chunks,
+          recordingId,
+        });
+      }
     }
+    
+    // Get existing browser chunks to preserve speaker information
+    const existingBrowserChunks = existingRecording?.transcript_chunks || [];
 
     // Get audio file from storage
     const filePath = existingRecording?.file_path || audioUrl;
@@ -218,21 +230,82 @@ export async function POST(request: NextRequest) {
     const transcriptionData = JSON.parse(transcriptionResult);
 
     // Format transcript chunks with timestamps
-    const chunks = transcriptionData.segments?.map((seg: any) => ({
-      text: seg.text,
-      timestampMs: Math.round(seg.start * 1000),
-      isFinal: true,
-    })) || [{
+    // Preserve speaker information from existing browser chunks
+    const whisperChunks = transcriptionData.segments?.map((seg: any) => {
+      const whisperTimestamp = Math.round(seg.start * 1000);
+      
+      // Find the most recent browser chunk with a speaker before or at this timestamp
+      let speaker: string | undefined;
+      let speakerTag: boolean | undefined;
+      
+      // First, check for speaker tag chunks (these mark when a speaker starts)
+      for (let i = existingBrowserChunks.length - 1; i >= 0; i--) {
+        const browserChunk = existingBrowserChunks[i];
+        // If we find a speaker tag chunk before this timestamp, use its speaker
+        if (browserChunk.speakerTag && browserChunk.speaker && browserChunk.timestampMs <= whisperTimestamp) {
+          speaker = browserChunk.speaker;
+          speakerTag = false; // This is a regular chunk, not a tag
+          break;
+        }
+      }
+      
+      // If no speaker tag found, look for any chunk with a speaker
+      if (!speaker) {
+        for (let i = existingBrowserChunks.length - 1; i >= 0; i--) {
+          const browserChunk = existingBrowserChunks[i];
+          if (browserChunk.speaker && browserChunk.timestampMs <= whisperTimestamp) {
+            speaker = browserChunk.speaker;
+            speakerTag = browserChunk.speakerTag;
+            break;
+          }
+        }
+      }
+      
+      // Format text with speaker name prefix if speaker exists
+      // Format: "Speaker - text"
+      let formattedText = seg.text.trim();
+      if (speaker) {
+        // Check if text already has a speaker prefix to avoid double-prefixing
+        const alreadyHasSpeakerTag = /^\[[^\]]+\]:\s*/.test(formattedText) || /^[A-Za-z][A-Za-z\s]+\s+-\s+/.test(formattedText);
+        if (!alreadyHasSpeakerTag) {
+          formattedText = `${speaker} - ${formattedText}`;
+          console.log(`[TRANSCRIBE] Added speaker prefix: "${speaker} - ${formattedText.substring(0, 50)}..."`);
+        } else {
+          console.log(`[TRANSCRIBE] Text already has speaker tag: "${formattedText.substring(0, 50)}..."`);
+        }
+      } else {
+        console.log(`[TRANSCRIBE] No speaker found for chunk at ${whisperTimestamp}ms: "${formattedText.substring(0, 50)}..."`);
+      }
+      
+      return {
+        text: formattedText,
+        timestampMs: whisperTimestamp,
+        isFinal: true,
+        speaker: speaker,
+        speakerTag: speakerTag || false,
+      };
+    }) || [{
       text: transcriptionData.text || "",
       timestampMs: 0,
       isFinal: true,
     }];
+    
+    console.log(`[TRANSCRIBE] Preserved speaker info: ${whisperChunks.filter((c: any) => c.speaker).length} chunks with speakers out of ${whisperChunks.length} total`);
+    
+    // Also preserve any speaker tag chunks from browser transcription
+    const speakerTagChunks = existingBrowserChunks.filter((chunk: any) => 
+      chunk.speakerTag === true
+    );
+    
+    // Merge speaker tags with Whisper chunks, maintaining chronological order
+    const allChunks = [...whisperChunks, ...speakerTagChunks]
+      .sort((a: any, b: any) => a.timestampMs - b.timestampMs);
 
-    // Store transcript in database
+    // Store transcript in database with preserved speaker information
     const { error: updateError } = await supabase
       .from("recordings")
       .update({
-        transcript_chunks: chunks,
+        transcript_chunks: allChunks,
       })
       .eq("id", recordingId)
       .eq("user_id", user.id);
@@ -242,12 +315,12 @@ export async function POST(request: NextRequest) {
       // Continue anyway - return the transcript even if DB update fails
     }
 
-    const fullTranscript = transcriptionData.text || chunks.map((c: any) => c.text).join(" ");
+    const fullTranscript = transcriptionData.text || allChunks.map((c: any) => c.text).join(" ");
 
     return NextResponse.json({
       success: true,
       transcript: fullTranscript,
-      chunks,
+      chunks: allChunks,
       recordingId,
     });
   } catch (error) {
