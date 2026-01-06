@@ -600,6 +600,7 @@ function RecorderPageContent() {
     // Set this member as the current speaker for subsequent chunks
     setCurrentSpeaker(memberName);
     currentSpeakerRef.current = memberName;
+    console.log(`[Recorder] Speaker set to: ${memberName}, ref: ${currentSpeakerRef.current}`);
     
     // Add to recently tagged speakers (most recent first, max 5)
     setRecentlyTaggedSpeakers((prev) => {
@@ -720,7 +721,12 @@ function RecorderPageContent() {
         const alreadyHasSpeakerTag = /^\[[^\]]+\]:\s*/.test(chunk.text);
         if (!alreadyHasSpeakerTag) {
           formattedText = `[${speaker}]: ${chunk.text}`;
+          console.log(`[Recorder] Adding speaker prefix: [${speaker}]: ${chunk.text.substring(0, 50)}...`);
+        } else {
+          console.log(`[Recorder] Text already has speaker tag: ${chunk.text.substring(0, 50)}...`);
         }
+      } else if (!speaker && !chunk.speakerTag) {
+        console.log(`[Recorder] No speaker set for chunk: ${chunk.text.substring(0, 50)}...`);
       }
       
       // Add current speaker to chunk if one is set
@@ -1755,7 +1761,12 @@ function RecorderPageContent() {
                               ? "text-gray-800"
                               : ""
                           }`}>
+                            {/* Display the text - it should already include [Speaker]: prefix if speaker is active */}
                             {chunk.text}
+                            {/* Debug: Show if text has speaker prefix */}
+                            {process.env.NODE_ENV === 'development' && /^\[[^\]]+\]:\s*/.test(chunk.text) && (
+                              <span className="ml-2 text-xs text-green-600">✓ Has speaker prefix</span>
+                            )}
                           </div>
                         </div>
                       );
