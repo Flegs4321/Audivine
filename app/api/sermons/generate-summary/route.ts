@@ -104,19 +104,23 @@ export async function POST(request: NextRequest) {
         let currentSpeaker: string | null = null;
         
         for (const chunk of recording.transcript_chunks) {
-          // If this chunk has a speaker and it's different from current, add speaker label
-          if (chunk.speaker && chunk.speaker !== currentSpeaker) {
-            // Check if this is a tag line (already has speaker info in text)
-            if (!chunk.text.startsWith("[") || (!chunk.text.includes(" sharing:]") && !chunk.text.includes(" speaking:]"))) {
-              transcriptWithSpeakers += `\n[${chunk.speaker}]: `;
-            }
+          // If this is a speaker tag, it already has the format we want, just add it
+          if (chunk.speakerTag === true) {
+            transcriptWithSpeakers += "\n" + chunk.text + "\n";
+            currentSpeaker = chunk.speaker || null;
+          } else if (chunk.speaker && chunk.speaker !== currentSpeaker) {
+            // If this chunk has a speaker and it's different from current, add speaker label
+            transcriptWithSpeakers += `\n[${chunk.speaker}]: `;
             currentSpeaker = chunk.speaker;
           } else if (!chunk.speaker && currentSpeaker) {
             // Speaker ended, reset
             currentSpeaker = null;
           }
           
-          transcriptWithSpeakers += chunk.text + " ";
+          // Only add text if it's not a speaker tag (speaker tags are already added above)
+          if (!chunk.speakerTag) {
+            transcriptWithSpeakers += chunk.text + " ";
+          }
         }
         
         fullTranscript = transcriptWithSpeakers.trim();

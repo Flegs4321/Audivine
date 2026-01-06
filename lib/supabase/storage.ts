@@ -13,6 +13,7 @@ export interface RecordingMetadata {
     timestampMs: number;
     isFinal: boolean;
     speaker?: string; // Optional speaker name for this chunk
+    speakerTag?: boolean; // True if this chunk is a speaker tag marker
   }>;
   mimeType: string;
   fileSize: number; // in bytes

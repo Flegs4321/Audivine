@@ -118,6 +118,8 @@ function RecorderPageContent() {
   const [showSermonSpeakerDropdown, setShowSermonSpeakerDropdown] = useState(false);
   const [memberSearchQuery, setMemberSearchQuery] = useState("");
   const [sermonSpeakerSearchQuery, setSermonSpeakerSearchQuery] = useState("");
+  const [recentlyTaggedSpeakers, setRecentlyTaggedSpeakers] = useState<string[]>([]); // Track recently tagged speakers for quick access
+  const [keepDropdownOpen, setKeepDropdownOpen] = useState(false); // Option to keep dropdown open for consecutive tagging
   const [error, setError] = useState<string | null>(null);
   const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
@@ -142,6 +144,7 @@ function RecorderPageContent() {
   const transcriptChunksRef = useRef<TranscriptChunk[]>([]);
   const elapsedTimeRef = useRef<number>(0);
   const transcriptEndRef = useRef<HTMLDivElement | null>(null);
+  const currentSpeakerRef = useRef<string | null>(null); // Ref to track current speaker for transcript chunks
 
   // Timer effect
   useEffect(() => {
@@ -396,6 +399,8 @@ function RecorderPageContent() {
       transcriptChunksRef.current = [];
       elapsedTimeRef.current = 0;
       setCurrentSpeaker(null); // Reset current speaker
+      currentSpeakerRef.current = null; // Reset ref
+      setRecentlyTaggedSpeakers([]); // Reset recently tagged speakers
       // Reset seen final texts to prevent duplicates from previous recordings
       seenFinalTextsRef.current.clear();
       
@@ -577,6 +582,7 @@ function RecorderPageContent() {
     if (segment === "Sharing") {
       setShowMemberDropdown(true);
       setShowSermonSpeakerDropdown(false);
+      setKeepDropdownOpen(false); // Reset keep open when switching segments
     } else if (segment === "Sermon") {
       setShowSermonSpeakerDropdown(true);
       setShowMemberDropdown(false);
@@ -586,13 +592,20 @@ function RecorderPageContent() {
     }
   };
 
-  const handleMemberSelect = async (memberName: string) => {
+  const handleMemberSelect = async (memberName: string, keepOpen = false) => {
     if (!memberName.trim()) return;
 
     const currentMs = getCurrentElapsedMs();
     
     // Set this member as the current speaker for subsequent chunks
     setCurrentSpeaker(memberName);
+    currentSpeakerRef.current = memberName;
+    
+    // Add to recently tagged speakers (most recent first, max 5)
+    setRecentlyTaggedSpeakers((prev) => {
+      const filtered = prev.filter(name => name !== memberName);
+      return [memberName, ...filtered].slice(0, 5);
+    });
     
     // Insert member name as a special chunk in the transcript
     const memberChunk: TranscriptChunk = {
@@ -600,6 +613,7 @@ function RecorderPageContent() {
       timestampMs: currentMs,
       isFinal: true,
       speaker: memberName,
+      speakerTag: true, // Mark as speaker tag for better visual distinction
     };
 
     setTranscriptChunks((prev) => {
@@ -608,9 +622,14 @@ function RecorderPageContent() {
       return updated;
     });
 
-    // Close dropdown after selection
-    setShowMemberDropdown(false);
-    setMemberSearchQuery("");
+    // Keep dropdown open if requested (for consecutive tagging) or if keepDropdownOpen is true
+    if (!keepOpen && !keepDropdownOpen) {
+      setShowMemberDropdown(false);
+      setMemberSearchQuery("");
+    } else {
+      // Keep dropdown open but clear search to show all options again
+      setMemberSearchQuery("");
+    }
 
     // Ensure transcription continues after dropdown interaction
     // Sometimes clicking buttons can cause focus loss that stops recognition
@@ -631,6 +650,7 @@ function RecorderPageContent() {
     
     // Set this speaker as the current speaker for subsequent chunks
     setCurrentSpeaker(speakerName);
+    currentSpeakerRef.current = speakerName;
     
     // Insert speaker name as a special chunk in the transcript
     const speakerChunk: TranscriptChunk = {
@@ -638,6 +658,7 @@ function RecorderPageContent() {
       timestampMs: currentMs,
       isFinal: true,
       speaker: speakerName,
+      speakerTag: true, // Mark as speaker tag for better visual distinction
     };
 
     setTranscriptChunks((prev) => {
@@ -674,13 +695,25 @@ function RecorderPageContent() {
     transcription.onTextChunk((chunk) => {
       if (!isMounted) return;
 
+      // Use ref for current speaker to ensure we have the latest value
+      const speaker = currentSpeakerRef.current || currentSpeaker || undefined;
+      
       // Add current speaker to chunk if one is set
       const chunkWithSpeaker: TranscriptChunk = {
         ...chunk,
-        speaker: currentSpeaker || undefined,
+        speaker: speaker,
       };
 
       setTranscriptChunks((prev) => {
+        // If it's a speaker tag, add it directly and set current speaker
+        if (chunk.speakerTag) {
+          const updated = [...prev, chunk];
+          transcriptChunksRef.current = updated;
+          currentSpeakerRef.current = chunk.speaker || null;
+          setCurrentSpeaker(chunk.speaker || null);
+          return updated;
+        }
+        
         // If it's an interim result, replace the last interim chunk
         if (!chunkWithSpeaker.isFinal) {
           // Replace the last chunk if it's also interim
@@ -733,7 +766,7 @@ function RecorderPageContent() {
     return () => {
       isMounted = false;
     };
-  }, [transcription.isAvailable, transcription.onTextChunk]);
+  }, [transcription.isAvailable, transcription.onTextChunk, currentSpeaker]);
 
   // Handle automatic section analysis
   const handleAnalyzeSections = async () => {
@@ -813,6 +846,8 @@ function RecorderPageContent() {
               text: c.text,
               timestampMs: c.timestampMs,
               isFinal: c.isFinal ?? true,
+              speaker: c.speaker,
+              speakerTag: c.speakerTag,
             }))
           : [], // Empty for OpenAI - will be transcribed after upload
         mimeType,
@@ -877,12 +912,13 @@ function RecorderPageContent() {
                       timestampMs: whisperTimestamp,
                       isFinal: true,
                       speaker: speaker,
+                      speakerTag: false,
                     };
                   });
                   
                   // Also preserve any speaker tag chunks from browser transcription
                   const speakerTagChunks = browserChunks.filter(chunk => 
-                    chunk.speaker && (chunk.text.startsWith("[") && (chunk.text.includes(" sharing:]") || chunk.text.includes(" speaking:]")))
+                    chunk.speakerTag === true
                   );
                   
                   // Merge speaker tags with Whisper chunks, maintaining chronological order
@@ -1068,6 +1104,11 @@ function RecorderPageContent() {
                 {(state === "recording" || state === "paused") && activeSegment && (
                   <div className="bg-blue-100 text-blue-800 px-6 py-3 rounded-lg font-semibold">
                     Active: {activeSegment}
+                    {currentSpeaker && (
+                      <span className="ml-3 text-blue-600">
+                        • Current Speaker: <span className="font-bold">{currentSpeaker}</span>
+                      </span>
+                    )}
                   </div>
                 )}
 
@@ -1095,12 +1136,23 @@ function RecorderPageContent() {
                     </div>
                     
                     {/* Member Dropdown for Sharing Time */}
-                    {activeSegment === "Sharing" && showMemberDropdown && (
+                    {activeSegment === "Sharing" && (showMemberDropdown || keepDropdownOpen) && (
                       <div className="w-full max-w-md">
                         <div className="bg-white border border-gray-300 rounded-lg shadow-lg p-4">
-                          <label className="block text-sm font-medium text-gray-700 mb-2">
-                            Select Member Sharing:
-                          </label>
+                          <div className="flex items-center justify-between mb-2">
+                            <label className="block text-sm font-medium text-gray-700">
+                              Select Member Sharing:
+                            </label>
+                            <label className="flex items-center text-xs text-gray-600 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={keepDropdownOpen}
+                                onChange={(e) => setKeepDropdownOpen(e.target.checked)}
+                                className="mr-1"
+                              />
+                              Keep open
+                            </label>
+                          </div>
                           {loadingMembers ? (
                             <div className="text-center py-4 text-gray-500">Loading members...</div>
                           ) : members.length === 0 ? (
@@ -1131,13 +1183,35 @@ function RecorderPageContent() {
                             
                             return (
                               <>
+                                {/* Recently Tagged Speakers - Quick Access */}
+                                {recentlyTaggedSpeakers.length > 0 && !memberSearchQuery && (
+                                  <div className="mb-3">
+                                    <div className="text-xs font-semibold text-gray-600 mb-2">Recently Tagged (Quick Select):</div>
+                                    <div className="flex flex-wrap gap-2">
+                                      {recentlyTaggedSpeakers.map((speakerName) => (
+                                        <button
+                                          key={speakerName}
+                                          onClick={async (e) => {
+                                            e.preventDefault();
+                                            e.stopPropagation();
+                                            await handleMemberSelect(speakerName, true);
+                                          }}
+                                          className="px-3 py-1.5 bg-blue-100 border border-blue-300 text-blue-700 rounded-lg hover:bg-blue-200 font-medium text-sm transition-colors"
+                                        >
+                                          {speakerName}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+                                
                                 <input
                                   type="text"
                                   placeholder="Search speakers..."
                                   value={memberSearchQuery}
                                   onChange={(e) => setMemberSearchQuery(e.target.value)}
                                   className="w-full px-3 py-2 mb-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
-                                  autoFocus
+                                  autoFocus={!keepDropdownOpen}
                                 />
                                 {sorted.length === 0 ? (
                                   <div className="text-center py-4 text-gray-500">
@@ -1147,21 +1221,25 @@ function RecorderPageContent() {
                                   <div className="space-y-2 max-h-60 overflow-y-auto">
                                     {sorted.map((member) => {
                                       const isTagged = (member as any).tagged === true;
+                                      const isRecent = recentlyTaggedSpeakers.includes(member.name);
                                       return (
                                         <button
                                           key={member.id}
                                           onClick={async (e) => {
                                             e.preventDefault();
                                             e.stopPropagation();
-                                            await handleMemberSelect(member.name);
+                                            await handleMemberSelect(member.name, keepDropdownOpen);
                                           }}
                                           className={`w-full text-left px-4 py-2 rounded-lg transition-colors border ${
                                             isTagged
                                               ? "bg-blue-100 border-blue-300 hover:bg-blue-200 font-semibold"
+                                              : isRecent
+                                              ? "bg-green-50 border-green-200 hover:bg-green-100"
                                               : "bg-gray-50 border-gray-200 hover:bg-blue-50 hover:text-blue-700"
                                           }`}
                                         >
                                           {isTagged && <span className="text-blue-600 mr-2">⭐</span>}
+                                          {isRecent && !isTagged && <span className="text-green-600 mr-2">🕐</span>}
                                           {member.name}
                                         </button>
                                       );
@@ -1171,17 +1249,41 @@ function RecorderPageContent() {
                               </>
                             );
                           })()}
-                          <button
-                            onClick={() => {
-                              setShowMemberDropdown(false);
-                              setMemberSearchQuery("");
-                            }}
-                            className="mt-3 w-full px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 text-sm"
-                          >
-                            Cancel
-                          </button>
+                          <div className="flex gap-2 mt-3">
+                            <button
+                              onClick={() => {
+                                setShowMemberDropdown(false);
+                                setKeepDropdownOpen(false);
+                                setMemberSearchQuery("");
+                              }}
+                              className="flex-1 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 text-sm"
+                            >
+                              Close
+                            </button>
+                            {!showMemberDropdown && keepDropdownOpen && (
+                              <button
+                                onClick={() => setShowMemberDropdown(true)}
+                                className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium"
+                              >
+                                Tag Next Speaker
+                              </button>
+                            )}
+                          </div>
                         </div>
                       </div>
+                    )}
+                    
+                    {/* Quick Tag Button for Sharing Time - Shows when dropdown is closed */}
+                    {activeSegment === "Sharing" && !showMemberDropdown && !keepDropdownOpen && (
+                      <button
+                        onClick={() => {
+                          setShowMemberDropdown(true);
+                          setMemberSearchQuery("");
+                        }}
+                        className="px-6 py-3 bg-green-600 text-white rounded-lg font-medium hover:bg-green-700 transition-all shadow-md"
+                      >
+                        Tag Speaker
+                      </button>
                     )}
 
                     {/* Speaker Dropdown for Sermon - Tagged First, Then All Alphabetically */}
@@ -1508,21 +1610,22 @@ function RecorderPageContent() {
                 ) : (
                   <div className="space-y-3">
                     {transcriptChunks.slice(-MAX_DISPLAYED_TRANSCRIPT_CHUNKS).map((chunk, index) => {
-                      // Check if this is a member tag (starts with [ and ends with sharing:] or speaking:])
-                      const isMemberTag = chunk.text.startsWith("[") && (chunk.text.includes(" sharing:]") || chunk.text.includes(" speaking:]"));
-                      const isSermonTag = chunk.text.startsWith("[") && chunk.text.includes(" speaking:]");
+                      // Check if this is a speaker tag
+                      const isSpeakerTag = chunk.speakerTag === true;
+                      const isSermonTag = isSpeakerTag && chunk.text.includes(" speaking:]");
+                      const isSharingTag = isSpeakerTag && chunk.text.includes(" sharing:]");
                       const isLastChunk = index === transcriptChunks.slice(-MAX_DISPLAYED_TRANSCRIPT_CHUNKS).length - 1;
-                      const hasSpeaker = chunk.speaker && !isMemberTag; // Show speaker name if present and not a tag line
+                      const hasSpeaker = chunk.speaker && !isSpeakerTag; // Show speaker name if present and not a tag line
                       
                       return (
                         <div
                           key={index}
                           ref={isLastChunk ? transcriptEndRef : null}
                           className={`text-sm leading-relaxed animate-fade-in ${
-                            isMemberTag
+                            isSpeakerTag
                               ? isSermonTag
-                                ? "bg-purple-100 border-l-4 border-purple-500 pl-3 py-2 rounded"
-                                : "bg-blue-100 border-l-4 border-blue-500 pl-3 py-2 rounded"
+                                ? "bg-purple-100 border-l-4 border-purple-500 pl-3 py-2 rounded shadow-sm"
+                                : "bg-blue-100 border-l-4 border-blue-500 pl-3 py-2 rounded shadow-sm"
                               : hasSpeaker
                               ? "bg-green-50 border-l-2 border-green-300 pl-2 py-1"
                               : chunk.isFinal
@@ -1531,7 +1634,7 @@ function RecorderPageContent() {
                           }`}
                         >
                           <div className={`text-xs mb-1 font-mono ${
-                            isMemberTag 
+                            isSpeakerTag 
                               ? isSermonTag 
                                 ? "text-purple-700 font-semibold" 
                                 : "text-blue-700 font-semibold" 
@@ -1541,11 +1644,16 @@ function RecorderPageContent() {
                           }`}>
                             {formatTimeMs(chunk.timestampMs)}
                             {hasSpeaker && (
-                              <span className="ml-2 text-green-600">• {chunk.speaker}</span>
+                              <span className="ml-2 text-green-600 font-medium">• {chunk.speaker}</span>
+                            )}
+                            {isSpeakerTag && (
+                              <span className="ml-2 text-xs">
+                                {isSermonTag ? "🎤 Sermon" : "💬 Sharing"}
+                              </span>
                             )}
                           </div>
                           <div className={`text-sm ${
-                            isMemberTag 
+                            isSpeakerTag 
                               ? isSermonTag
                                 ? "text-purple-900 font-semibold"
                                 : "text-blue-900 font-semibold" 
