@@ -608,20 +608,96 @@ function RecorderPageContent() {
       return [memberName, ...filtered].slice(0, 5);
     });
     
-    // Insert member name as a special chunk in the transcript
-    // Format: [Name sharing:] so OpenAI can recognize it
-    const memberChunk: TranscriptChunk = {
-      text: `[${memberName} sharing:]`,
-      timestampMs: currentMs,
-      isFinal: true,
-      speaker: memberName,
-      speakerTag: true, // Mark as speaker tag for better visual distinction
-    };
-
+    // Retroactively apply speaker to recent chunks (if tagging late)
+    // Find the last speaker tag or the start of the current segment
     setTranscriptChunks((prev) => {
-      const updated = [...prev, memberChunk];
-      transcriptChunksRef.current = updated;
-      return updated;
+      const chunks = [...prev];
+      let lastSpeakerTagIndex = -1;
+      let segmentStartIndex = -1;
+      
+      // Find the last speaker tag
+      for (let i = chunks.length - 1; i >= 0; i--) {
+        if (chunks[i].speakerTag) {
+          lastSpeakerTagIndex = i;
+          break;
+        }
+      }
+      
+      // Find the start of the current segment (if in Sharing segment)
+      if (activeSegment === "Sharing" && activeSegmentStartMs !== null) {
+        for (let i = chunks.length - 1; i >= 0; i--) {
+          if (chunks[i].timestampMs >= activeSegmentStartMs) {
+            segmentStartIndex = i;
+          } else {
+            break;
+          }
+        }
+      }
+      
+      // Determine where to start retroactive tagging
+      // Start from the last speaker tag, or segment start, or beginning of recent chunks (last 20)
+      const startIndex = Math.max(
+        lastSpeakerTagIndex + 1,
+        segmentStartIndex >= 0 ? segmentStartIndex : Math.max(0, chunks.length - 20)
+      );
+      
+      // Retroactively apply speaker to chunks without a speaker
+      // But stop if there's a gap of more than 12 seconds between consecutive chunks
+      const MAX_RETROACTIVE_GAP_MS = 12000; // 12 seconds
+      let lastProcessedTimestamp = currentMs;
+      let shouldContinue = true;
+      
+      const updated = chunks.map((chunk, index) => {
+        if (!shouldContinue) return chunk;
+        
+        if (index >= startIndex && !chunk.speakerTag && !chunk.speaker) {
+          // Check if there's a gap of more than 12 seconds from the last processed chunk
+          const timeGap = lastProcessedTimestamp - chunk.timestampMs;
+          
+          if (timeGap > MAX_RETROACTIVE_GAP_MS) {
+            // Gap is too large, stop retroactive tagging
+            shouldContinue = false;
+            console.log(`[Recorder] Stopping retroactive tagging due to ${(timeGap / 1000).toFixed(1)}s gap`);
+            return chunk;
+          }
+          
+          // Also check gap to the next chunk (if exists) to catch pauses
+          if (index < chunks.length - 1) {
+            const nextChunk = chunks[index + 1];
+            const gapToNext = nextChunk.timestampMs - chunk.timestampMs;
+            if (gapToNext > MAX_RETROACTIVE_GAP_MS) {
+              // There's a large gap after this chunk, stop here
+              shouldContinue = false;
+              console.log(`[Recorder] Stopping retroactive tagging due to ${(gapToNext / 1000).toFixed(1)}s gap after chunk`);
+              return chunk;
+            }
+          }
+          
+          // Format: "Speaker - text" instead of "[Speaker]: text"
+          const originalText = chunk.text.replace(/^\[[^\]]+\]:\s*/, '').replace(/^[^-]+\s*-\s*/, '');
+          lastProcessedTimestamp = chunk.timestampMs;
+          return {
+            ...chunk,
+            text: `${memberName} - ${originalText}`,
+            speaker: memberName,
+          };
+        }
+        return chunk;
+      });
+      
+      // Insert member name as a special chunk in the transcript
+      // Format: "Name - sharing:" so OpenAI can recognize it
+      const memberChunk: TranscriptChunk = {
+        text: `${memberName} - sharing:`,
+        timestampMs: currentMs,
+        isFinal: true,
+        speaker: memberName,
+        speakerTag: true, // Mark as speaker tag for better visual distinction
+      };
+      
+      const finalUpdated = [...updated, memberChunk];
+      transcriptChunksRef.current = finalUpdated;
+      return finalUpdated;
     });
 
     // Keep dropdown open if requested (for consecutive tagging) or if keepDropdownOpen is true
@@ -667,19 +743,94 @@ function RecorderPageContent() {
     setCurrentSpeaker(speakerName);
     currentSpeakerRef.current = speakerName;
     
-    // Insert speaker name as a special chunk in the transcript
-    const speakerChunk: TranscriptChunk = {
-      text: `[${speakerName} speaking:]`,
-      timestampMs: currentMs,
-      isFinal: true,
-      speaker: speakerName,
-      speakerTag: true, // Mark as speaker tag for better visual distinction
-    };
-
+    // Retroactively apply speaker to recent chunks (if tagging late)
     setTranscriptChunks((prev) => {
-      const updated = [...prev, speakerChunk];
-      transcriptChunksRef.current = updated;
-      return updated;
+      const chunks = [...prev];
+      let lastSpeakerTagIndex = -1;
+      let segmentStartIndex = -1;
+      
+      // Find the last speaker tag
+      for (let i = chunks.length - 1; i >= 0; i--) {
+        if (chunks[i].speakerTag) {
+          lastSpeakerTagIndex = i;
+          break;
+        }
+      }
+      
+      // Find the start of the current segment (if in Sermon segment)
+      if (activeSegment === "Sermon" && activeSegmentStartMs !== null) {
+        for (let i = chunks.length - 1; i >= 0; i--) {
+          if (chunks[i].timestampMs >= activeSegmentStartMs) {
+            segmentStartIndex = i;
+          } else {
+            break;
+          }
+        }
+      }
+      
+      // Determine where to start retroactive tagging
+      const startIndex = Math.max(
+        lastSpeakerTagIndex + 1,
+        segmentStartIndex >= 0 ? segmentStartIndex : Math.max(0, chunks.length - 20)
+      );
+      
+      // Retroactively apply speaker to chunks without a speaker
+      // But stop if there's a gap of more than 12 seconds between consecutive chunks
+      const MAX_RETROACTIVE_GAP_MS = 12000; // 12 seconds
+      let lastProcessedTimestamp = currentMs;
+      let shouldContinue = true;
+      
+      const updated = chunks.map((chunk, index) => {
+        if (!shouldContinue) return chunk;
+        
+        if (index >= startIndex && !chunk.speakerTag && !chunk.speaker) {
+          // Check if there's a gap of more than 12 seconds from the last processed chunk
+          const timeGap = lastProcessedTimestamp - chunk.timestampMs;
+          
+          if (timeGap > MAX_RETROACTIVE_GAP_MS) {
+            // Gap is too large, stop retroactive tagging
+            shouldContinue = false;
+            console.log(`[Recorder] Stopping retroactive tagging due to ${(timeGap / 1000).toFixed(1)}s gap`);
+            return chunk;
+          }
+          
+          // Also check gap to the next chunk (if exists) to catch pauses
+          if (index < chunks.length - 1) {
+            const nextChunk = chunks[index + 1];
+            const gapToNext = nextChunk.timestampMs - chunk.timestampMs;
+            if (gapToNext > MAX_RETROACTIVE_GAP_MS) {
+              // There's a large gap after this chunk, stop here
+              shouldContinue = false;
+              console.log(`[Recorder] Stopping retroactive tagging due to ${(gapToNext / 1000).toFixed(1)}s gap after chunk`);
+              return chunk;
+            }
+          }
+          
+          // Format: "Speaker - text"
+          const originalText = chunk.text.replace(/^\[[^\]]+\]:\s*/, '').replace(/^[^-]+\s*-\s*/, '');
+          lastProcessedTimestamp = chunk.timestampMs;
+          return {
+            ...chunk,
+            text: `${speakerName} - ${originalText}`,
+            speaker: speakerName,
+          };
+        }
+        return chunk;
+      });
+      
+      // Insert speaker name as a special chunk in the transcript
+      // Format: "Name - speaking:" so OpenAI can recognize it
+      const speakerChunk: TranscriptChunk = {
+        text: `${speakerName} - speaking:`,
+        timestampMs: currentMs,
+        isFinal: true,
+        speaker: speakerName,
+        speakerTag: true, // Mark as speaker tag for better visual distinction
+      };
+      
+      const finalUpdated = [...updated, speakerChunk];
+      transcriptChunksRef.current = finalUpdated;
+      return finalUpdated;
     });
 
     // Close dropdown after selection
@@ -714,14 +865,14 @@ function RecorderPageContent() {
       const speaker = currentSpeakerRef.current || currentSpeaker || undefined;
       
       // Format text with speaker name prefix if speaker is active
-      // This ensures OpenAI can see the speaker name in the transcript
+      // Format: "Speaker - text" instead of "[Speaker]: text"
       let formattedText = chunk.text;
       if (speaker && !chunk.speakerTag) {
-        // Check if the text already starts with a speaker tag (to avoid double-prefixing)
-        const alreadyHasSpeakerTag = /^\[[^\]]+\]:\s*/.test(chunk.text);
+        // Check if the text already has a speaker tag (either old format [Speaker]: or new format Speaker -)
+        const alreadyHasSpeakerTag = /^\[[^\]]+\]:\s*/.test(chunk.text) || /^[^-]+\s*-\s*/.test(chunk.text);
         if (!alreadyHasSpeakerTag) {
-          formattedText = `[${speaker}]: ${chunk.text}`;
-          console.log(`[Recorder] Adding speaker prefix: [${speaker}]: ${chunk.text.substring(0, 50)}...`);
+          formattedText = `${speaker} - ${chunk.text}`;
+          console.log(`[Recorder] Adding speaker prefix: ${speaker} - ${chunk.text.substring(0, 50)}...`);
         } else {
           console.log(`[Recorder] Text already has speaker tag: ${chunk.text.substring(0, 50)}...`);
         }
@@ -778,8 +929,8 @@ function RecorderPageContent() {
             // Keep final chunks
             if (c.isFinal) return true;
             // Remove interim chunks that match the original text
-            // Extract original text from chunks that might have speaker prefix
-            const cOriginalText = c.text.replace(/^\[[^\]]+\]:\s*/, '');
+            // Extract original text from chunks that might have speaker prefix (old or new format)
+            const cOriginalText = c.text.replace(/^\[[^\]]+\]:\s*/, '').replace(/^[^-]+\s*-\s*/, '');
             return cOriginalText !== chunk.text;
           }),
           chunkWithSpeaker
@@ -951,13 +1102,13 @@ function RecorderPageContent() {
                     }
                     
                     // Format text with speaker name prefix (like browser transcription)
-                    // This ensures OpenAI can see speaker names in the transcript
+                    // Format: "Speaker - text" instead of "[Speaker]: text"
                     let formattedText = chunk.text;
                     if (speaker) {
-                      // Check if text already has a speaker prefix to avoid double-prefixing
-                      const alreadyHasSpeakerTag = /^\[[^\]]+\]:\s*/.test(chunk.text);
+                      // Check if text already has a speaker prefix (old or new format) to avoid double-prefixing
+                      const alreadyHasSpeakerTag = /^\[[^\]]+\]:\s*/.test(chunk.text) || /^[^-]+\s*-\s*/.test(chunk.text);
                       if (!alreadyHasSpeakerTag) {
-                        formattedText = `[${speaker}]: ${chunk.text}`;
+                        formattedText = `${speaker} - ${chunk.text}`;
                       }
                     }
                     
@@ -1712,8 +1863,8 @@ function RecorderPageContent() {
                     {transcriptChunks.slice(-MAX_DISPLAYED_TRANSCRIPT_CHUNKS).map((chunk, index) => {
                       // Check if this is a speaker tag
                       const isSpeakerTag = chunk.speakerTag === true;
-                      const isSermonTag = isSpeakerTag && chunk.text.includes(" speaking:]");
-                      const isSharingTag = isSpeakerTag && chunk.text.includes(" sharing:]");
+                      const isSermonTag = isSpeakerTag && (chunk.text.includes(" speaking:") || chunk.text.includes(" speaking:]"));
+                      const isSharingTag = isSpeakerTag && (chunk.text.includes(" sharing:") || chunk.text.includes(" sharing:]"));
                       const isLastChunk = index === transcriptChunks.slice(-MAX_DISPLAYED_TRANSCRIPT_CHUNKS).length - 1;
                       const hasSpeaker = chunk.speaker && !isSpeakerTag; // Show speaker name if present and not a tag line
                       
@@ -1761,10 +1912,10 @@ function RecorderPageContent() {
                               ? "text-gray-800"
                               : ""
                           }`}>
-                            {/* Display the text - it should already include [Speaker]: prefix if speaker is active */}
+                            {/* Display the text - it should already include "Speaker - " prefix if speaker is active */}
                             {chunk.text}
                             {/* Debug: Show if text has speaker prefix */}
-                            {process.env.NODE_ENV === 'development' && /^\[[^\]]+\]:\s*/.test(chunk.text) && (
+                            {process.env.NODE_ENV === 'development' && (/^\[[^\]]+\]:\s*/.test(chunk.text) || /^[^-]+\s*-\s*/.test(chunk.text)) && (
                               <span className="ml-2 text-xs text-green-600">✓ Has speaker prefix</span>
                             )}
                           </div>

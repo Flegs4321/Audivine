@@ -99,26 +99,19 @@ export async function POST(request: NextRequest) {
 
       // Combine all transcript chunks into full text, including speaker information
       if (recording.transcript_chunks && Array.isArray(recording.transcript_chunks)) {
-        // Since speaker names are now included in the text itself (e.g., "[John]: Hello..."),
+        // Since speaker names are now included in the text itself (e.g., "John - Hello..."),
         // we can simply concatenate all chunks, ensuring proper spacing
         let transcriptWithSpeakers = "";
         
         for (const chunk of recording.transcript_chunks) {
-          // If this is a speaker tag (e.g., "[John sharing:]"), add it with proper spacing
+          // If this is a speaker tag (e.g., "John - sharing:"), add it with proper spacing
           if (chunk.speakerTag === true) {
             transcriptWithSpeakers += "\n" + chunk.text + "\n";
           } else {
-            // Regular transcript chunk - check if it already has speaker prefix
-            // If the text already starts with "[Name]:", it's already formatted correctly
-            const hasSpeakerPrefix = /^\[[^\]]+\]:\s*/.test(chunk.text);
-            
-            if (hasSpeakerPrefix) {
-              // Already has speaker prefix, just add it
-              transcriptWithSpeakers += chunk.text + " ";
-            } else {
-              // No speaker prefix, add as-is (this handles chunks without speakers)
-              transcriptWithSpeakers += chunk.text + " ";
-            }
+            // Regular transcript chunk - it may already have speaker prefix in format "Speaker - text"
+            // or old format "[Speaker]: text", or no prefix at all
+            // Just add it as-is since formatting is already done
+            transcriptWithSpeakers += chunk.text + " ";
           }
         }
         
@@ -148,12 +141,12 @@ export async function POST(request: NextRequest) {
     let prompt: string;
     if (userSettings.prompt && userSettings.prompt.trim().length > 0) {
       // Use only the custom prompt and transcript
-      prompt = `${userSettings.prompt.trim()}\n\nTranscript (with speaker names indicated by [Speaker Name]:):\n${fullTranscript.substring(0, 16000)}`;
+      prompt = `${userSettings.prompt.trim()}\n\nTranscript (with speaker names in format "Speaker Name - text"):\n${fullTranscript.substring(0, 16000)}`;
     } else {
       // Fallback to default prompt if no custom prompt
       prompt = `You are creating a summary of a church service sermon to send to all church members. 
 
-The transcript includes speaker names indicated by [Speaker Name]: before their words. Use this information to identify who is speaking during different parts of the service (sharing time, sermon, etc.).
+The transcript includes speaker names in the format "Speaker Name - text" (e.g., "Josh Byler - Pray for my mom"). Use this information to identify who is speaking during different parts of the service (sharing time, sermon, etc.).
 
 Please create a well-formatted, engaging summary that includes:
 1. A compelling title for the sermon
@@ -166,7 +159,7 @@ Please create a well-formatted, engaging summary that includes:
 
 Make it warm, accessible, and inspiring. Format it in a way that's easy to read and share.
 
-Sermon Transcript (with speaker names):
+Sermon Transcript (with speaker names in format "Speaker Name - text"):
 ${fullTranscript.substring(0, 16000)}`;
     }
 
