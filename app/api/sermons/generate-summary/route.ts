@@ -99,27 +99,26 @@ export async function POST(request: NextRequest) {
 
       // Combine all transcript chunks into full text, including speaker information
       if (recording.transcript_chunks && Array.isArray(recording.transcript_chunks)) {
-        // Group chunks by speaker and format with speaker names
+        // Since speaker names are now included in the text itself (e.g., "[John]: Hello..."),
+        // we can simply concatenate all chunks, ensuring proper spacing
         let transcriptWithSpeakers = "";
-        let currentSpeaker: string | null = null;
         
         for (const chunk of recording.transcript_chunks) {
-          // If this is a speaker tag, it already has the format we want, just add it
+          // If this is a speaker tag (e.g., "[John sharing:]"), add it with proper spacing
           if (chunk.speakerTag === true) {
             transcriptWithSpeakers += "\n" + chunk.text + "\n";
-            currentSpeaker = chunk.speaker || null;
-          } else if (chunk.speaker && chunk.speaker !== currentSpeaker) {
-            // If this chunk has a speaker and it's different from current, add speaker label
-            transcriptWithSpeakers += `\n[${chunk.speaker}]: `;
-            currentSpeaker = chunk.speaker;
-          } else if (!chunk.speaker && currentSpeaker) {
-            // Speaker ended, reset
-            currentSpeaker = null;
-          }
-          
-          // Only add text if it's not a speaker tag (speaker tags are already added above)
-          if (!chunk.speakerTag) {
-            transcriptWithSpeakers += chunk.text + " ";
+          } else {
+            // Regular transcript chunk - check if it already has speaker prefix
+            // If the text already starts with "[Name]:", it's already formatted correctly
+            const hasSpeakerPrefix = /^\[[^\]]+\]:\s*/.test(chunk.text);
+            
+            if (hasSpeakerPrefix) {
+              // Already has speaker prefix, just add it
+              transcriptWithSpeakers += chunk.text + " ";
+            } else {
+              // No speaker prefix, add as-is (this handles chunks without speakers)
+              transcriptWithSpeakers += chunk.text + " ";
+            }
           }
         }
         

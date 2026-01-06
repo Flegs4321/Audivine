@@ -608,6 +608,7 @@ function RecorderPageContent() {
     });
     
     // Insert member name as a special chunk in the transcript
+    // Format: [Name sharing:] so OpenAI can recognize it
     const memberChunk: TranscriptChunk = {
       text: `[${memberName} sharing:]`,
       timestampMs: currentMs,
@@ -641,6 +642,19 @@ function RecorderPageContent() {
         console.error("[Recorder] Failed to restart transcription after speaker selection:", err);
       }
     }
+  };
+
+  // Handle ending current speaker (for moderator or when speaker finishes)
+  const handleEndSpeaker = () => {
+    const currentMs = getCurrentElapsedMs();
+    
+    // Clear current speaker
+    setCurrentSpeaker(null);
+    currentSpeakerRef.current = null;
+    
+    // Optionally add a marker in the transcript to indicate speaker ended
+    // This helps with formatting but doesn't add unnecessary text
+    console.log("[Recorder] Speaker ended at", formatTimeMs(currentMs));
   };
 
   const handleSermonSpeakerSelect = async (speakerName: string) => {
@@ -698,9 +712,21 @@ function RecorderPageContent() {
       // Use ref for current speaker to ensure we have the latest value
       const speaker = currentSpeakerRef.current || currentSpeaker || undefined;
       
+      // Format text with speaker name prefix if speaker is active
+      // This ensures OpenAI can see the speaker name in the transcript
+      let formattedText = chunk.text;
+      if (speaker && !chunk.speakerTag) {
+        // Check if the text already starts with a speaker tag (to avoid double-prefixing)
+        const alreadyHasSpeakerTag = /^\[[^\]]+\]:\s*/.test(chunk.text);
+        if (!alreadyHasSpeakerTag) {
+          formattedText = `[${speaker}]: ${chunk.text}`;
+        }
+      }
+      
       // Add current speaker to chunk if one is set
       const chunkWithSpeaker: TranscriptChunk = {
         ...chunk,
+        text: formattedText, // Use formatted text with speaker name
         speaker: speaker,
       };
 
@@ -721,26 +747,37 @@ function RecorderPageContent() {
             return [...prev.slice(0, -1), chunkWithSpeaker];
           }
           // Otherwise add as new interim chunk (but only if we haven't seen this as final)
-          if (!seenFinalTextsRef.current.has(chunkWithSpeaker.text)) {
+          // Use original text for comparison to avoid speaker prefix issues
+          if (!seenFinalTextsRef.current.has(chunk.text)) {
             return [...prev, chunkWithSpeaker];
           }
           return prev;
         }
         
-        // For final chunks, check if we've already added this exact text
+        // For final chunks, check if we've already added this exact text (using original text)
         // This prevents duplicates from the Web Speech API
-        if (seenFinalTextsRef.current.has(chunkWithSpeaker.text)) {
+        if (seenFinalTextsRef.current.has(chunk.text)) {
           // Already have this final chunk, don't add again
-          console.log("[Recorder] Skipping duplicate final chunk:", chunkWithSpeaker.text);
+          console.log("[Recorder] Skipping duplicate final chunk:", chunk.text);
           return prev;
         }
         
-        // Mark as seen
-        seenFinalTextsRef.current.add(chunkWithSpeaker.text);
+        // Mark as seen (using original text, not formatted)
+        seenFinalTextsRef.current.add(chunk.text);
         
         // Remove any interim chunks that might overlap with this final chunk
-        // and add the final chunk
-        const updated = [...prev.filter(c => c.isFinal || c.text !== chunkWithSpeaker.text), chunkWithSpeaker];
+        // Filter out interim chunks that match the original text (before speaker prefix)
+        const updated = [
+          ...prev.filter(c => {
+            // Keep final chunks
+            if (c.isFinal) return true;
+            // Remove interim chunks that match the original text
+            // Extract original text from chunks that might have speaker prefix
+            const cOriginalText = c.text.replace(/^\[[^\]]+\]:\s*/, '');
+            return cOriginalText !== chunk.text;
+          }),
+          chunkWithSpeaker
+        ];
         transcriptChunksRef.current = updated;
         
         // Limit stored chunks to prevent memory issues (but keep more than displayed for upload)
@@ -907,8 +944,19 @@ function RecorderPageContent() {
                       }
                     }
                     
+                    // Format text with speaker name prefix (like browser transcription)
+                    // This ensures OpenAI can see speaker names in the transcript
+                    let formattedText = chunk.text;
+                    if (speaker) {
+                      // Check if text already has a speaker prefix to avoid double-prefixing
+                      const alreadyHasSpeakerTag = /^\[[^\]]+\]:\s*/.test(chunk.text);
+                      if (!alreadyHasSpeakerTag) {
+                        formattedText = `[${speaker}]: ${chunk.text}`;
+                      }
+                    }
+                    
                     return {
-                      text: chunk.text,
+                      text: formattedText,
                       timestampMs: whisperTimestamp,
                       isFinal: true,
                       speaker: speaker,
@@ -1249,41 +1297,87 @@ function RecorderPageContent() {
                               </>
                             );
                           })()}
-                          <div className="flex gap-2 mt-3">
-                            <button
-                              onClick={() => {
-                                setShowMemberDropdown(false);
-                                setKeepDropdownOpen(false);
-                                setMemberSearchQuery("");
-                              }}
-                              className="flex-1 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 text-sm"
-                            >
-                              Close
-                            </button>
-                            {!showMemberDropdown && keepDropdownOpen && (
-                              <button
-                                onClick={() => setShowMemberDropdown(true)}
-                                className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium"
-                              >
-                                Tag Next Speaker
-                              </button>
+                          <div className="flex flex-col gap-2 mt-3">
+                            {/* End Speaker / No Speaker buttons */}
+                            {currentSpeaker && (
+                              <div className="flex gap-2">
+                                <button
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    handleEndSpeaker();
+                                  }}
+                                  className="flex-1 px-4 py-2 bg-orange-500 text-white rounded-lg hover:bg-orange-600 text-sm font-medium"
+                                  title="End current speaker (e.g., when they finish or moderator takes over)"
+                                >
+                                  End Speaker
+                                </button>
+                                <button
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    handleEndSpeaker();
+                                    setShowMemberDropdown(false);
+                                    setKeepDropdownOpen(false);
+                                  }}
+                                  className="flex-1 px-4 py-2 bg-gray-500 text-white rounded-lg hover:bg-gray-600 text-sm font-medium"
+                                  title="No speaker at this time (e.g., moderator only)"
+                                >
+                                  No Speaker
+                                </button>
+                              </div>
                             )}
+                            <div className="flex gap-2">
+                              <button
+                                onClick={() => {
+                                  setShowMemberDropdown(false);
+                                  setKeepDropdownOpen(false);
+                                  setMemberSearchQuery("");
+                                }}
+                                className="flex-1 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 text-sm"
+                              >
+                                Close
+                              </button>
+                              {!showMemberDropdown && keepDropdownOpen && (
+                                <button
+                                  onClick={() => setShowMemberDropdown(true)}
+                                  className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium"
+                                >
+                                  Tag Next Speaker
+                                </button>
+                              )}
+                            </div>
                           </div>
                         </div>
                       </div>
                     )}
                     
-                    {/* Quick Tag Button for Sharing Time - Shows when dropdown is closed */}
+                    {/* Quick Tag Button and End Speaker for Sharing Time - Shows when dropdown is closed */}
                     {activeSegment === "Sharing" && !showMemberDropdown && !keepDropdownOpen && (
-                      <button
-                        onClick={() => {
-                          setShowMemberDropdown(true);
-                          setMemberSearchQuery("");
-                        }}
-                        className="px-6 py-3 bg-green-600 text-white rounded-lg font-medium hover:bg-green-700 transition-all shadow-md"
-                      >
-                        Tag Speaker
-                      </button>
+                      <div className="flex gap-3 justify-center">
+                        <button
+                          onClick={() => {
+                            setShowMemberDropdown(true);
+                            setMemberSearchQuery("");
+                          }}
+                          className="px-6 py-3 bg-green-600 text-white rounded-lg font-medium hover:bg-green-700 transition-all shadow-md"
+                        >
+                          Tag Speaker
+                        </button>
+                        {currentSpeaker && (
+                          <button
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              handleEndSpeaker();
+                            }}
+                            className="px-6 py-3 bg-orange-500 text-white rounded-lg font-medium hover:bg-orange-600 transition-all shadow-md"
+                            title="End current speaker"
+                          >
+                            End Speaker
+                          </button>
+                        )}
+                      </div>
                     )}
 
                     {/* Speaker Dropdown for Sermon - Tagged First, Then All Alphabetically */}
