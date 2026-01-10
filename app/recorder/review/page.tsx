@@ -740,7 +740,7 @@ function ReviewPageContent() {
       const { Document, Packer, Paragraph, TextRun, AlignmentType, BorderStyle, WidthType, Table, TableRow, TableCell, ShadingType } = await import("docx");
       const { saveAs } = await import("file-saver");
       
-      const docElements: (Paragraph | Table)[] = [];
+      const docElements: any[] = [];
       
       // Get church name and address from settings
       const churchName = churchSettings.church_name || "CHURCH NAME";
