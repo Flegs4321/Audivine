@@ -32,6 +32,8 @@ function ReviewPageContent() {
   const [generatingSummary, setGeneratingSummary] = useState(false);
   const [showSummaryModal, setShowSummaryModal] = useState(false);
   const [hasOpenAIKey, setHasOpenAIKey] = useState<boolean | null>(null);
+  const [recording, setRecording] = useState<any>(null);
+  const [churchSettings, setChurchSettings] = useState<{ church_name?: string; church_address?: string }>({});
 
   // Load sections from recording
   useEffect(() => {
@@ -78,6 +80,9 @@ function ReviewPageContent() {
         if (!recording) {
           throw new Error("Recording not found");
         }
+
+        // Store recording data for export
+        setRecording(recording);
 
         // Store transcript chunks for speaker checking and updating
         if (recording.transcript_chunks && Array.isArray(recording.transcript_chunks)) {
@@ -191,6 +196,44 @@ function ReviewPageContent() {
     };
 
     checkOpenAIKey();
+  }, [user]);
+
+  // Load church settings for export
+  useEffect(() => {
+    const loadChurchSettings = async () => {
+      if (!user) {
+        return;
+      }
+
+      try {
+        const { supabase } = await import("@/lib/supabase/client");
+        const { data: { session } } = await supabase.auth.getSession();
+
+        if (!session?.access_token) {
+          return;
+        }
+
+        const response = await fetch("/api/settings", {
+          headers: {
+            "Authorization": `Bearer ${session.access_token}`,
+          },
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          if (data.settings) {
+            setChurchSettings({
+              church_name: data.settings.church_name || "CHURCH NAME",
+              church_address: data.settings.church_address || "807 W Vantrees St. Washington, IN 47501",
+            });
+          }
+        }
+      } catch (err) {
+        console.error("Error loading church settings:", err);
+      }
+    };
+
+    loadChurchSettings();
   }, [user]);
 
   // Load speakers list
@@ -694,172 +737,498 @@ function ReviewPageContent() {
     
     try {
       // Dynamically import docx and file-saver
-      const { Document, Packer, Paragraph, TextRun, HeadingLevel, NumberFormat } = await import("docx");
+      const { Document, Packer, Paragraph, TextRun, AlignmentType, BorderStyle, WidthType, Table, TableRow, TableCell, ShadingType } = await import("docx");
       const { saveAs } = await import("file-saver");
       
-      const docElements: any[] = [];
+      const docElements: (Paragraph | Table)[] = [];
+      
+      // Get church name and address from settings
+      const churchName = churchSettings.church_name || "CHURCH NAME";
+      const churchAddress = churchSettings.church_address || "807 W Vantrees St. Washington, IN 47501";
+      
+      // Use current/live date
+      const currentDate = new Date();
+      const sermonDate = currentDate.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+      
+      // Header section - minimal spacing to fit on one page
+      docElements.push(new Paragraph({
+        children: [],
+        spacing: { after: 100 },
+      }));
+      
+      // Church info box with blue border
+      docElements.push(new Table({
+        width: {
+          size: 100,
+          type: WidthType.PERCENTAGE,
+        },
+        rows: [
+          new TableRow({
+            children: [
+              new TableCell({
+                borders: {
+                  top: { style: BorderStyle.SINGLE, size: 6, color: "0066CC" },
+                  bottom: { style: BorderStyle.SINGLE, size: 6, color: "0066CC" },
+                  left: { style: BorderStyle.SINGLE, size: 6, color: "0066CC" },
+                  right: { style: BorderStyle.SINGLE, size: 6, color: "0066CC" },
+                },
+                shading: {
+                  fill: "FFFFFF",
+                  type: ShadingType.SOLID,
+                },
+                children: [
+                  new Paragraph({
+                    children: [
+                      new TextRun({
+                        text: churchName.toUpperCase(),
+                        color: "FF6600", // Orange (#FF6600)
+                        bold: true,
+                        size: 28, // Reduced to fit on page
+                      }),
+                    ],
+                    spacing: { after: 100 },
+                  }),
+                  new Paragraph({
+                    children: [
+                      new TextRun({
+                        text: churchAddress,
+                        color: "6BB3FF", // Light blue (#6BB3FF or #66B3FF)
+                        size: 24, // Reduced to fit on page
+                      }),
+                    ],
+                  }),
+                ],
+                margins: {
+                  top: 200,
+                  bottom: 200,
+                  left: 300,
+                  right: 300,
+                },
+              }),
+            ],
+          }),
+        ],
+      }));
+      
+      // Date - centered
+      docElements.push(new Paragraph({
+        children: [
+          new TextRun({
+            text: sermonDate,
+            color: "000000", // Black
+            bold: true,
+            size: 28, // Reduced to fit on page
+          }),
+        ],
+        alignment: AlignmentType.CENTER,
+        spacing: { before: 200, after: 300 },
+      }));
+      
+      // Parse summary text and organize into sections
       const lines = fullSummary.split(/\n/);
       
-      let i = 0;
-      while (i < lines.length) {
-        const line = lines[i].trim();
-        
-        // Skip empty lines
-        if (!line) {
-          i++;
+      // Parse sections from summary
+      const parsedSections: { [key: string]: string[] } = {
+        Announcements: [],
+        "Upcoming Events": [],
+        Sharing: [],
+        Sermon: [],
+      };
+      
+      let currentSection: string | null = null;
+      let currentItems: string[] = [];
+      
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) {
+          // Empty line - if we have items, keep them; might be section break
           continue;
         }
         
-        // Detect section headings (common patterns)
-        const isSectionHeading = /^(announcements?|sharing|sermon|message|key points?|takeaways?|scripture|closing|introduction|summary)/i.test(line) &&
-                                 (line.length < 100 && (line === line.toUpperCase() || line.split(" ").length < 5));
+        // Detect section headers (various formats: "ANNOUNCEMENTS", "Announcements:", "## Announcements", etc.)
+        const announcementsMatch = /^[#\s]*announcements?[:\s]*$/i.test(trimmed);
+        const eventsMatch = /^[#\s]*(upcoming\s+)?events?[:\s]*$/i.test(trimmed);
+        const sharingMatch = /^[#\s]*(prayer\s+&\s+)?sharing[:\s]*$/i.test(trimmed);
+        const sermonMatch = /^[#\s]*sermon[:\s\-]*/i.test(trimmed);
         
-        // Detect markdown headings (# ## ###)
-        const markdownHeading = line.match(/^(#{1,3})\s+(.+)$/);
-        
-        // Detect bullet points (-, *, •, or numbered 1. 2. etc.)
-        const bulletMatch = line.match(/^[\s]*[-*•]\s+(.+)$/);
-        const numberedMatch = line.match(/^[\s]*(\d+)[.)]\s+(.+)$/);
-        
-        if (markdownHeading) {
-          // Markdown heading
-          const level = markdownHeading[1].length;
-          const text = markdownHeading[2].trim();
-          docElements.push(new Paragraph({
-            text: text,
-            heading: level === 1 ? HeadingLevel.HEADING_1 : level === 2 ? HeadingLevel.HEADING_2 : HeadingLevel.HEADING_3,
-            spacing: { after: 200, before: level === 1 ? 0 : 120 },
-          }));
-          i++;
-        } else if (isSectionHeading) {
-          // Section heading
-          docElements.push(new Paragraph({
-            text: line,
-            heading: HeadingLevel.HEADING_2,
-            spacing: { after: 200, before: 240 },
-          }));
-          i++;
-        } else if (bulletMatch || numberedMatch) {
-          // Determine if it's a numbered list or bullet list
-          const isNumbered = !!numberedMatch;
-          
-          // Collect all consecutive bullet/numbered points
-          const listItems: string[] = [];
-          while (i < lines.length) {
-            const currentLine = lines[i].trim();
-            const currentBullet = currentLine.match(/^[\s]*[-*•]\s+(.+)$/);
-            const currentNumbered = currentLine.match(/^[\s]*(\d+)[.)]\s+(.+)$/);
-            
-            if (isNumbered && currentNumbered && currentNumbered.length >= 3) {
-              // currentNumbered[1] is the number, currentNumbered[2] is the text
-              const itemText = currentNumbered[2]?.trim();
-              if (itemText) {
-                listItems.push(itemText);
-              }
-              i++;
-            } else if (!isNumbered && currentBullet) {
-              // currentBullet[1] is the text
-              const itemText = currentBullet[1]?.trim();
-              if (itemText) {
-                listItems.push(itemText);
-              }
-              i++;
-            } else if (!currentLine) {
-              // Empty line - might be end of list
-              i++;
-              break;
-            } else {
-              // Not a list item, stop collecting
-              break;
-            }
+        if (announcementsMatch || (trimmed.toUpperCase() === "ANNOUNCEMENTS")) {
+          if (currentSection && currentItems.length > 0) {
+            parsedSections[currentSection as keyof typeof parsedSections].push(...currentItems);
           }
+          currentSection = "Announcements";
+          currentItems = [];
+        } else if (eventsMatch || (trimmed.toUpperCase().includes("EVENT"))) {
+          if (currentSection && currentItems.length > 0) {
+            parsedSections[currentSection as keyof typeof parsedSections].push(...currentItems);
+          }
+          currentSection = "Upcoming Events";
+          currentItems = [];
+        } else if (sharingMatch || (trimmed.toUpperCase().includes("SHARING") && !trimmed.toUpperCase().includes("PRAYER"))) {
+          if (currentSection && currentItems.length > 0) {
+            parsedSections[currentSection as keyof typeof parsedSections].push(...currentItems);
+          }
+          currentSection = "Sharing";
+          currentItems = [];
+        } else if (/prayer\s*&?\s*sharing/i.test(trimmed)) {
+          if (currentSection && currentItems.length > 0) {
+            parsedSections[currentSection as keyof typeof parsedSections].push(...currentItems);
+          }
+          currentSection = "Sharing";
+          currentItems = [];
+        } else if (sermonMatch) {
+          if (currentSection && currentItems.length > 0) {
+            parsedSections[currentSection as keyof typeof parsedSections].push(...currentItems);
+          }
+          currentSection = "Sermon";
+          currentItems = [];
+        } else if (currentSection) {
+          // Extract bullet point text (handle various bullet formats: ➤, •, -, *, or numbered)
+          const bulletMatch = trimmed.match(/^[➤•\-\*\u2022]\s*(.+)$/);
+          const numberedMatch = trimmed.match(/^\d+[.)]\s*(.+)$/);
           
-          // Create list
-          if (listItems.length > 0) {
-            listItems.forEach((item, idx) => {
-              if (isNumbered) {
-                // Numbered list
-                docElements.push(new Paragraph({
-                  text: item,
-                  numbering: {
-                    reference: "default-numbering",
-                    level: 0,
-                  },
-                  spacing: { after: 100 },
-                }));
-              } else {
-                // Bullet list
-                docElements.push(new Paragraph({
-                  text: item,
-                  bullet: {
-                    level: 0,
-                  },
-                  spacing: { after: 100 },
-                }));
-              }
-            });
-            // Add spacing after list
-            docElements.push(new Paragraph({
-              text: "",
-              spacing: { after: 120 },
-            }));
+          if (bulletMatch || numberedMatch) {
+            const text = bulletMatch ? bulletMatch[1] : (numberedMatch ? numberedMatch[1] : trimmed);
+            if (text && text.trim().length > 0) {
+              currentItems.push(text.trim());
+            }
+          } else if (trimmed.length > 5 && !trimmed.match(/^[#\s]*$/)) {
+            // Regular text line (not a header) - add as item
+            currentItems.push(trimmed);
           }
         } else {
-          // Regular paragraph - collect until we hit a heading or bullet
-          const paraLines: string[] = [line];
-          i++;
-          
-          // Collect consecutive non-bullet, non-heading lines
-          while (i < lines.length) {
-            const nextLine = lines[i].trim();
-            if (!nextLine) {
-              i++;
-              break;
+          // If no section detected yet, try to categorize by content
+          // Look for common patterns or default to Sermon
+          if (/announcements?/i.test(trimmed) && trimmed.length < 20) {
+            currentSection = "Announcements";
+            currentItems = [];
+          } else {
+            // Default to Sermon section for unclassified content
+            if (!currentSection) currentSection = "Sermon";
+            const bulletMatch = trimmed.match(/^[➤•\-\*\u2022]\s*(.+)$/);
+            const text = bulletMatch ? bulletMatch[1] : trimmed;
+            if (text && text.trim().length > 0) {
+              currentItems.push(text.trim());
             }
-            
-            // Stop if we hit a heading or bullet
-            if (nextLine.match(/^#{1,3}\s+/) || 
-                nextLine.match(/^[\s]*[-*•]\s+/) ||
-                nextLine.match(/^[\s]*\d+[.)]\s+/) ||
-                (/^(announcements?|sharing|sermon|message|key points?|takeaways?|scripture|closing|introduction|summary)/i.test(nextLine) &&
-                 nextLine.length < 100 && (nextLine === nextLine.toUpperCase() || nextLine.split(" ").length < 5))) {
-              break;
-            }
-            
-            paraLines.push(nextLine);
-            i++;
-          }
-          
-          // Create paragraph from collected lines
-          const paraText = paraLines.join(" ").trim();
-          if (paraText) {
-            docElements.push(new Paragraph({
-              text: paraText,
-              spacing: { after: 120 },
-            }));
           }
         }
       }
       
-      // Create the document with numbering support
-      const doc = new Document({
-        numbering: {
-          config: [
-            {
-              reference: "default-numbering",
-              levels: [
-                {
-                  level: 0,
-                  format: NumberFormat.DECIMAL,
-                  text: "%1.",
-                  alignment: "left",
-                },
-              ],
-            },
-          ],
+      // Add remaining items
+      if (currentSection && currentItems.length > 0) {
+        parsedSections[currentSection as keyof typeof parsedSections].push(...currentItems);
+      }
+      
+      // If no items were parsed into sections, put everything in Sermon
+      const totalItems = Object.values(parsedSections).reduce((sum, items) => sum + items.length, 0);
+      if (totalItems === 0) {
+        // Fallback: parse all lines as sermon items
+        const allLines = fullSummary.split(/\n/).map(l => l.trim()).filter(l => l.length > 0);
+        parsedSections.Sermon = allLines.map(line => {
+          const bulletMatch = line.match(/^[➤•\-\*\u2022\d+[.)]\s*(.+)$/);
+          return bulletMatch ? bulletMatch[1] : line;
+        }).filter(item => item.length > 5);
+      }
+      
+      // ANNOUNCEMENTS section (always show, even if empty) - modern header style
+      docElements.push(new Paragraph({
+        children: [
+          new TextRun({
+            text: "ANNOUNCEMENTS",
+            color: "000000", // Black text
+            bold: true,
+            size: 22, // Reduced to fit on page
+          }),
+        ],
+        shading: {
+          fill: "E3F2FD", // Light blue modern background
+          type: ShadingType.SOLID,
         },
+        border: {
+          top: { style: BorderStyle.SINGLE, size: 3, color: "1976D2" },
+          bottom: { style: BorderStyle.SINGLE, size: 3, color: "1976D2" },
+        },
+        spacing: { after: 120 },
+        indent: { left: 200 },
+      }));
+      
+      if (parsedSections.Announcements.length > 0) {
+        parsedSections.Announcements.forEach((item) => {
+          docElements.push(new Paragraph({
+            children: [
+              new TextRun({
+                text: `➤ ${item}`,
+                size: 18, // Slightly smaller to make room for events
+              }),
+            ],
+            spacing: { after: 80 }, // Reduced spacing
+            indent: { left: 300 },
+          }));
+        });
+      } else {
+        // Add placeholder if no announcements - minimal spacing
+        docElements.push(new Paragraph({
+          children: [
+            new TextRun({
+              text: "➤ No announcements",
+              size: 18,
+              italics: true,
+            }),
+          ],
+          spacing: { after: 80 },
+          indent: { left: 300 },
+        }));
+      }
+      
+      // UPCOMING EVENTS section (always show, can be blank) - optimized for up to 6 items
+      docElements.push(new Paragraph({
+        children: [
+          new TextRun({
+            text: "UPCOMING EVENTS",
+            color: "000000", // Black text
+            bold: true,
+            size: 22,
+          }),
+        ],
+        shading: {
+          fill: "E3F2FD", // Light blue modern background
+          type: ShadingType.SOLID,
+        },
+        border: {
+          top: { style: BorderStyle.SINGLE, size: 3, color: "1976D2" },
+          bottom: { style: BorderStyle.SINGLE, size: 3, color: "1976D2" },
+        },
+        spacing: { before: 100, after: 100 },
+        indent: { left: 200 },
+      }));
+      
+      if (parsedSections["Upcoming Events"].length > 0) {
+        parsedSections["Upcoming Events"].forEach((item) => {
+          docElements.push(new Paragraph({
+            children: [
+              new TextRun({
+                text: `➤ ${item}`,
+                size: 18, // Slightly smaller to fit more items
+              }),
+            ],
+            spacing: { after: 80 }, // Reduced spacing to fit 6 items
+            indent: { left: 300 },
+          }));
+        });
+      } else {
+        // Leave blank - minimal spacing to reserve room for future events
+        docElements.push(new Paragraph({
+          children: [],
+          spacing: { after: 80 },
+        }));
+      }
+      
+      // Add reserved space for up to 6 upcoming events (if not filled)
+      const eventsCount = parsedSections["Upcoming Events"].length || 0;
+      const reservedEvents = 6 - eventsCount;
+      if (reservedEvents > 0) {
+        for (let i = 0; i < reservedEvents; i++) {
+          docElements.push(new Paragraph({
+            children: [],
+            spacing: { after: 80 },
+          }));
+        }
+      }
+      
+      // PRAYER & SHARING section (always show, even if empty)
+      docElements.push(new Paragraph({
+        children: [
+          new TextRun({
+            text: "PRAYER & SHARING",
+            color: "000000", // Black text
+            bold: true,
+            size: 22,
+          }),
+        ],
+        shading: {
+          fill: "E3F2FD", // Light blue modern background
+          type: ShadingType.SOLID,
+        },
+        border: {
+          top: { style: BorderStyle.SINGLE, size: 3, color: "1976D2" },
+          bottom: { style: BorderStyle.SINGLE, size: 3, color: "1976D2" },
+        },
+        spacing: { before: 100, after: 100 },
+        indent: { left: 200 },
+      }));
+      
+      if (parsedSections.Sharing.length > 0) {
+        parsedSections.Sharing.forEach((item) => {
+          docElements.push(new Paragraph({
+            children: [
+              new TextRun({
+                text: `➤ ${item}`,
+                size: 18, // Slightly smaller to make room
+              }),
+            ],
+            spacing: { after: 80 }, // Reduced spacing
+            indent: { left: 300 },
+          }));
+        });
+      } else {
+        docElements.push(new Paragraph({
+          children: [
+            new TextRun({
+              text: "➤ No prayer requests or sharing",
+              size: 18,
+              italics: true,
+            }),
+          ],
+          spacing: { after: 80 },
+          indent: { left: 300 },
+        }));
+      }
+      
+      // Get speaker name from transcript chunks in the sermon section (before creating header)
+      const sermonSection = sections.find(s => s.label === "Sermon");
+      let speakerName: string | null = null;
+      
+      if (sermonSection && transcriptChunks.length > 0) {
+        // Find chunks in the sermon section that have a speaker
+        const sermonChunks = transcriptChunks.filter(
+          (chunk) => chunk.timestampMs >= sermonSection.startMs && 
+                     (sermonSection.endMs === null || chunk.timestampMs <= sermonSection.endMs) &&
+                     chunk.speaker && chunk.speaker.trim() !== ""
+        );
+        
+        if (sermonChunks.length > 0) {
+          // Get the most common speaker in the sermon section
+          const speakerCounts: { [key: string]: number } = {};
+          sermonChunks.forEach(chunk => {
+            if (chunk.speaker) {
+              speakerCounts[chunk.speaker] = (speakerCounts[chunk.speaker] || 0) + 1;
+            }
+          });
+          
+          speakerName = Object.keys(speakerCounts).reduce((a, b) => 
+            speakerCounts[a] > speakerCounts[b] ? a : b
+          );
+        }
+      }
+      
+      // SERMON section (always show) - include speaker name in header
+      const sermonTitle = speakerName ? `SERMON – ${speakerName.toUpperCase()}` : "SERMON";
+      docElements.push(new Paragraph({
+        children: [
+          new TextRun({
+            text: sermonTitle,
+            color: "000000", // Black text
+            bold: true,
+            size: 22,
+          }),
+        ],
+        shading: {
+          fill: "E3F2FD", // Light blue modern background
+          type: ShadingType.SOLID,
+        },
+        border: {
+          top: { style: BorderStyle.SINGLE, size: 3, color: "1976D2" },
+          bottom: { style: BorderStyle.SINGLE, size: 3, color: "1976D2" },
+        },
+        spacing: { before: 100, after: 100 },
+        indent: { left: 200 },
+      }));
+      
+      if (parsedSections.Sermon.length > 0) {
+        parsedSections.Sermon.forEach((item) => {
+          docElements.push(new Paragraph({
+            children: [
+              new TextRun({
+                text: `➤ ${item}`,
+                size: 18, // Slightly smaller to make room
+              }),
+            ],
+            spacing: { after: 80 }, // Reduced spacing
+            indent: { left: 300 },
+          }));
+        });
+      } else {
+        // If no sermon items parsed, add a placeholder
+        docElements.push(new Paragraph({
+          children: [
+            new TextRun({
+              text: "➤ No sermon summary available",
+              size: 18,
+              italics: true,
+            }),
+          ],
+          spacing: { after: 80 },
+          indent: { left: 300 },
+        }));
+      }
+      
+      // Footer with Spotify info (reduced spacing to fit on page)
+      docElements.push(new Paragraph({
+        children: [],
+        spacing: { before: 300, after: 0 },
+      }));
+      
+      docElements.push(new Paragraph({
+        children: [
+          new TextRun({
+            text: "ON SPOTIFY...",
+            color: "FFFFFF",
+            bold: true,
+            size: 18, // Further reduced to fit everything
+          }),
+        ],
+        shading: {
+          fill: "CC0000", // Red background
+          type: ShadingType.SOLID,
+        },
+        spacing: { after: 80 },
+      }));
+      
+      docElements.push(new Paragraph({
+        children: [
+          new TextRun({
+            text: "SEARCH FOR CHANNEL...",
+            color: "FFFFFF",
+            bold: true,
+            size: 18,
+          }),
+        ],
+        shading: {
+          fill: "CC0000",
+          type: ShadingType.SOLID,
+        },
+        spacing: { after: 80 },
+      }));
+      
+      docElements.push(new Paragraph({
+        children: [
+          new TextRun({
+            text: "CHAPEL807",
+            color: "00FF00", // Green (#00FF00)
+            bold: true,
+            size: 32, // Reduced to fit on page
+          }),
+        ],
+        shading: {
+          fill: "CC0000",
+          type: ShadingType.SOLID,
+        },
+        spacing: { after: 0 },
+      }));
+      
+      // Create the document with reduced margins to fit on one page
+      const doc = new Document({
         sections: [
           {
+            properties: {
+              page: {
+                margin: {
+                  top: 720, // 0.5 inch (reduced from 1 inch)
+                  right: 720,
+                  bottom: 720,
+                  left: 720,
+                },
+              },
+            },
             children: docElements,
           },
         ],
@@ -868,9 +1237,8 @@ function ReviewPageContent() {
       // Generate and download the Word document
       const blob = await Packer.toBlob(doc);
       
-      // Get recording title or use default filename
-      const recordingTitle = sections.find(s => s.label === "Sermon")?.text?.substring(0, 50) || "Sermon Summary";
-      const filename = `${recordingTitle.replace(/[^a-z0-9]/gi, "_")}_${new Date().toISOString().split("T")[0]}.docx`;
+      // Get filename
+      const filename = `${churchName.replace(/\s+/g, "_")}_${sermonDate.replace(/\s+/g, "_")}.docx`;
       
       saveAs(blob, filename);
       alert("Word document exported successfully!");
