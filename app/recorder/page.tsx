@@ -409,9 +409,25 @@ function RecorderPageContent() {
       // If OpenAI is selected, Whisper will replace it after upload for better accuracy
       if (transcription.isAvailable) {
         try {
+          // CRITICAL: Register callback BEFORE starting transcription
+          // This ensures the callback is set up when the recognition object is created
+          if (transcriptionCallbackRef.current) {
+            console.log("[Recorder] Registering callback before starting transcription...");
+            transcription.onTextChunk(transcriptionCallbackRef.current);
+          } else {
+            console.warn("[Recorder] Callback not ready yet, transcription may not work!");
+          }
+          
           console.log("[Recorder] Starting browser transcription for live display...");
           await transcription.start();
           console.log("[Recorder] Browser transcription started successfully");
+          
+          // CRITICAL: Re-register callback AFTER starting transcription
+          // This ensures the callback is set up after the recognition object is recreated
+          if (transcriptionCallbackRef.current) {
+            console.log("[Recorder] Re-registering callback after starting transcription...");
+            transcription.onTextChunk(transcriptionCallbackRef.current);
+          }
         } catch (err) {
           console.error("[Recorder] Failed to start transcription:", err);
           // Continue recording even if transcription fails
@@ -537,9 +553,21 @@ function RecorderPageContent() {
       // If OpenAI is selected, Whisper will replace it after upload for better accuracy
       if (transcription.isAvailable && !transcription.isActive) {
         try {
+          // CRITICAL: Register callback BEFORE restarting transcription
+          if (transcriptionCallbackRef.current) {
+            console.log("[Recorder] Registering callback before restarting transcription...");
+            transcription.onTextChunk(transcriptionCallbackRef.current);
+          }
+          
           console.log("[Recorder] Restarting browser transcription for live display...");
           await transcription.start();
           console.log("[Recorder] Browser transcription restarted successfully");
+          
+          // CRITICAL: Re-register callback AFTER restarting transcription
+          if (transcriptionCallbackRef.current) {
+            console.log("[Recorder] Re-registering callback after restarting transcription...");
+            transcription.onTextChunk(transcriptionCallbackRef.current);
+          }
         } catch (err) {
           console.error("[Recorder] Failed to restart transcription:", err);
           // Continue recording even if transcription fails
@@ -884,6 +912,14 @@ function RecorderPageContent() {
 
     // Create the callback function
     const callback = (chunk: TranscriptChunk) => {
+      console.log(`[Recorder] CALLBACK FIRED! Received chunk:`, {
+        text: chunk.text.substring(0, 50),
+        isFinal: chunk.isFinal,
+        timestampMs: chunk.timestampMs,
+        speaker: chunk.speaker,
+        speakerTag: chunk.speakerTag
+      });
+      
       // Use ref for current speaker to ensure we have the latest value (ref is always current)
       const speaker = currentSpeakerRef.current || undefined;
       
@@ -991,9 +1027,12 @@ function RecorderPageContent() {
 
     // Store callback in ref for re-registration
     transcriptionCallbackRef.current = callback;
+    console.log("[Recorder] Callback created and stored in ref");
 
     // Register callback with transcription provider
+    console.log("[Recorder] Registering callback with transcription provider...");
     transcription.onTextChunk(callback);
+    console.log("[Recorder] Callback registered successfully");
   }, [transcription.isAvailable, transcription.onTextChunk]);
 
   // Re-register callback when transcription becomes active (after start/resume)
@@ -1003,6 +1042,7 @@ function RecorderPageContent() {
       console.log("[Recorder] Re-registering transcription callback after start/resume");
       // Re-register callback to ensure it's set up after transcription restarts
       transcription.onTextChunk(transcriptionCallbackRef.current);
+      console.log("[Recorder] Callback re-registered after start/resume");
     }
   }, [transcription.isAvailable, transcription.isActive, transcription.onTextChunk]);
 

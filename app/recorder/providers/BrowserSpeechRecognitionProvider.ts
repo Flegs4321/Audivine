@@ -78,7 +78,12 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
     this.recognition.lang = "en-US";
 
     this.recognition.onresult = (event) => {
-      if (!this.textChunkCallback) return;
+      if (!this.textChunkCallback) {
+        console.warn("[BrowserSpeechRecognition] onresult fired but no callback set!");
+        return;
+      }
+
+      console.log(`[BrowserSpeechRecognition] onresult fired: resultIndex=${event.resultIndex}, results.length=${event.results.length}`);
 
       // The Web Speech API sends cumulative results - each event contains ALL results from the start
       // We need to process only NEW results (from resultIndex onwards) and track what we've sent
@@ -86,6 +91,8 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
       // Process only results starting from resultIndex (where new results begin)
       // But also ensure we don't process anything before lastProcessedIndex
       const startIndex = Math.max(event.resultIndex, this.lastProcessedIndex);
+      
+      console.log(`[BrowserSpeechRecognition] Processing results from index ${startIndex} to ${event.results.length - 1}`);
       
       for (let i = startIndex; i < event.results.length; i++) {
         const result = event.results[i];
@@ -98,12 +105,14 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
           // Check if we've already sent this exact final text
           if (this.sentFinalTexts.has(transcript)) {
             // Already sent, skip it
+            console.log(`[BrowserSpeechRecognition] Skipping duplicate final: "${transcript.substring(0, 30)}..."`);
             this.lastProcessedIndex = i + 1;
             continue;
           }
           
           // Send final result immediately
           const currentMs = Date.now() - this.startTimeMs;
+          console.log(`[BrowserSpeechRecognition] Sending final chunk: "${transcript.substring(0, 50)}..." at ${currentMs}ms`);
           this.textChunkCallback({
             text: transcript,
             timestampMs: currentMs,
@@ -120,6 +129,7 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
           // Also skip if we've already sent this as a final result
           if (i === event.results.length - 1 && !this.sentFinalTexts.has(transcript)) {
             const currentMs = Date.now() - this.startTimeMs;
+            console.log(`[BrowserSpeechRecognition] Sending interim chunk: "${transcript.substring(0, 50)}..." at ${currentMs}ms`);
             this.textChunkCallback({
               text: transcript,
               timestampMs: currentMs,
@@ -185,6 +195,8 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
 
     // Save the current callback before recreating
     const savedCallback = this.textChunkCallback;
+    
+    console.log("[BrowserSpeechRecognition] Starting recognition, callback present:", !!savedCallback);
 
     // Recreate recognition object for clean state
     this.recognition = new SpeechRecognitionClass();
@@ -192,10 +204,14 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
     // Restore callback BEFORE setupRecognition so it's available in the onresult handler
     if (savedCallback) {
       this.textChunkCallback = savedCallback;
+      console.log("[BrowserSpeechRecognition] Callback restored before setup");
+    } else {
+      console.warn("[BrowserSpeechRecognition] WARNING: No callback set! Transcription will not work!");
     }
     
     // Setup recognition with the callback already in place
     this.setupRecognition();
+    console.log("[BrowserSpeechRecognition] Recognition setup complete, callback present:", !!this.textChunkCallback);
 
     // Reset state for new recording session
     this.startTimeMs = Date.now();
@@ -205,6 +221,7 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
 
     try {
       this.recognition.start();
+      console.log("[BrowserSpeechRecognition] Recognition started successfully");
     } catch (error) {
       this.isRunning = false; // Reset flag if start fails
       // If still fails, throw the error
@@ -217,7 +234,13 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
   }
 
   onTextChunk(callback: (chunk: TranscriptChunk) => void): void {
+    console.log("[BrowserSpeechRecognition] onTextChunk called, setting callback");
     this.textChunkCallback = callback;
+    // If recognition is already set up, we need to ensure the callback is available
+    // The onresult handler will use this.textChunkCallback
+    if (this.recognition) {
+      console.log("[BrowserSpeechRecognition] Callback set, recognition object exists");
+    }
   }
 
   stop(): void {
