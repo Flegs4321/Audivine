@@ -711,12 +711,24 @@ function RecorderPageContent() {
 
     // Ensure transcription continues after dropdown interaction
     // Sometimes clicking buttons can cause focus loss that stops recognition
-    if (state === "recording" && transcription.isAvailable && !transcription.isActive) {
-      try {
-        console.log("[Recorder] Restarting transcription after speaker selection...");
-        await transcription.start();
-      } catch (err) {
-        console.error("[Recorder] Failed to restart transcription after speaker selection:", err);
+    if (state === "recording" && transcription.isAvailable) {
+      // Always re-register callback to ensure it's set up
+      if (transcriptionCallbackRef.current) {
+        transcription.onTextChunk(transcriptionCallbackRef.current);
+      }
+      
+      // Restart if not active
+      if (!transcription.isActive) {
+        try {
+          console.log("[Recorder] Restarting transcription after speaker selection...");
+          await transcription.start();
+          // Re-register callback after start to ensure it's set up
+          if (transcriptionCallbackRef.current) {
+            transcription.onTextChunk(transcriptionCallbackRef.current);
+          }
+        } catch (err) {
+          console.error("[Recorder] Failed to restart transcription after speaker selection:", err);
+        }
       }
     }
   };
@@ -839,12 +851,24 @@ function RecorderPageContent() {
 
     // Ensure transcription continues after dropdown interaction
     // Sometimes clicking buttons can cause focus loss that stops recognition
-    if (state === "recording" && transcription.isAvailable && !transcription.isActive) {
-      try {
-        console.log("[Recorder] Restarting transcription after speaker selection...");
-        await transcription.start();
-      } catch (err) {
-        console.error("[Recorder] Failed to restart transcription after speaker selection:", err);
+    if (state === "recording" && transcription.isAvailable) {
+      // Always re-register callback to ensure it's set up
+      if (transcriptionCallbackRef.current) {
+        transcription.onTextChunk(transcriptionCallbackRef.current);
+      }
+      
+      // Restart if not active
+      if (!transcription.isActive) {
+        try {
+          console.log("[Recorder] Restarting transcription after speaker selection...");
+          await transcription.start();
+          // Re-register callback after start to ensure it's set up
+          if (transcriptionCallbackRef.current) {
+            transcription.onTextChunk(transcriptionCallbackRef.current);
+          }
+        } catch (err) {
+          console.error("[Recorder] Failed to restart transcription after speaker selection:", err);
+        }
       }
     }
   };
@@ -852,15 +876,14 @@ function RecorderPageContent() {
   // Set up transcription callback
   // Use a ref to persist the seenFinalTexts Set across renders
   const seenFinalTextsRef = useRef<Set<string>>(new Set());
+  const transcriptionCallbackRef = useRef<((chunk: TranscriptChunk) => void) | null>(null);
 
+  // Create and register transcription callback
   useEffect(() => {
     if (!transcription.isAvailable) return;
 
-    let isMounted = true;
-
-    transcription.onTextChunk((chunk) => {
-      if (!isMounted) return;
-
+    // Create the callback function
+    const callback = (chunk: TranscriptChunk) => {
       // Use ref for current speaker to ensure we have the latest value (ref is always current)
       const speaker = currentSpeakerRef.current || undefined;
       
@@ -964,12 +987,24 @@ function RecorderPageContent() {
           transcriptEndRef.current.scrollIntoView({ behavior: "smooth", block: "nearest" });
         }
       }, 100);
-    });
-
-    return () => {
-      isMounted = false;
     };
+
+    // Store callback in ref for re-registration
+    transcriptionCallbackRef.current = callback;
+
+    // Register callback with transcription provider
+    transcription.onTextChunk(callback);
   }, [transcription.isAvailable, transcription.onTextChunk]);
+
+  // Re-register callback when transcription becomes active (after start/resume)
+  // This ensures the callback is set up after the recognition object is recreated
+  useEffect(() => {
+    if (transcription.isAvailable && transcription.isActive && transcriptionCallbackRef.current) {
+      console.log("[Recorder] Re-registering transcription callback after start/resume");
+      // Re-register callback to ensure it's set up after transcription restarts
+      transcription.onTextChunk(transcriptionCallbackRef.current);
+    }
+  }, [transcription.isAvailable, transcription.isActive, transcription.onTextChunk]);
 
   // Handle automatic section analysis
   const handleAnalyzeSections = async () => {
