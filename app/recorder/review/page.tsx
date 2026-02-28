@@ -543,8 +543,8 @@ function ReviewPageContent() {
       // Also add a speaker tag marker at the start of the section if it doesn't exist
       const hasTagMarker = sectionChunks.some(
         (chunk) =>
-          chunk.text.startsWith("[") &&
-          (chunk.text.includes(" sharing:]") || chunk.text.includes(" speaking:]"))
+          (chunk.text.startsWith("[") && (chunk.text.includes(" sharing:]") || chunk.text.includes(" speaking:]") || chunk.text.includes(" sermon speaker:]"))) ||
+          (chunk as any).speakerTag || chunk.text.includes(" - sermon speaker:") || chunk.text.includes(" - speaking:")
       );
 
       if (!hasTagMarker) {
@@ -554,13 +554,14 @@ function ReviewPageContent() {
         );
         if (firstChunkIndex >= 0) {
           const tagText = section.label === "Sermon" 
-            ? `[${speakerName} speaking:]` 
+            ? `${speakerName} - sermon speaker:` 
             : `[${speakerName} sharing:]`;
           const tagChunk = {
             text: tagText,
             timestampMs: section.startMs,
             isFinal: true,
             speaker: speakerName,
+            ...(section.label === "Sermon" ? { speakerTag: true } : {}),
           };
           updatedChunks.splice(firstChunkIndex, 0, tagChunk);
         }
@@ -1006,6 +1007,7 @@ function ReviewPageContent() {
       
       let currentSection: string | null = null;
       let currentItems: string[] = [];
+      let messageSpeakerFromSummary: string | null = null;
       
       for (const line of lines) {
         const trimmed = line.trim();
@@ -1019,8 +1021,8 @@ function ReviewPageContent() {
         const eventsMatch = /^[#\s]*(upcoming\s+)?events?[:\s]*$/i.test(trimmed);
         const sharingMatch = /^[#\s]*(prayer\s+&\s+)?sharing[:\s]*$/i.test(trimmed);
         const sermonMatch = /^[#\s]*sermon[:\s\-]*/i.test(trimmed);
-        // AI summary often uses "3) MESSAGE" instead of "Sermon" for the sermon section
-        const messageMatch = /^[\d#\s.)\-]*message[:\s\-]*$/i.test(trimmed);
+        // AI summary often uses "3) MESSAGE" or "3) MESSAGE: Speaker Name" for the sermon section
+        const messageMatch = /^[\d#\s.)\-]*message[:\s\-]/i.test(trimmed);
         
         if (announcementsMatch || (trimmed.toUpperCase() === "ANNOUNCEMENTS")) {
           if (currentSection && currentItems.length > 0) {
@@ -1034,6 +1036,18 @@ function ReviewPageContent() {
           }
           currentSection = "Upcoming Events";
           currentItems = [];
+        } else if (sermonMatch || messageMatch) {
+          // Check MESSAGE/Sermon before SHARING so "3) MESSAGE: Speaker" is not misclassified
+          if (currentSection && currentItems.length > 0) {
+            parsedSections[currentSection as keyof typeof parsedSections].push(...currentItems);
+          }
+          currentSection = "Sermon";
+          currentItems = [];
+          // Extract speaker name from line like "3) MESSAGE: Marlon Wagler" for the Word header
+          if (messageMatch && /message\s*:\s*/i.test(trimmed)) {
+            const afterColon = trimmed.replace(/^[\d#\s.)\-]*message\s*:\s*/i, "").trim();
+            if (afterColon.length > 0) messageSpeakerFromSummary = afterColon;
+          }
         } else if (sharingMatch || (trimmed.toUpperCase().includes("SHARING") && !trimmed.toUpperCase().includes("PRAYER"))) {
           if (currentSection && currentItems.length > 0) {
             parsedSections[currentSection as keyof typeof parsedSections].push(...currentItems);
@@ -1045,12 +1059,6 @@ function ReviewPageContent() {
             parsedSections[currentSection as keyof typeof parsedSections].push(...currentItems);
           }
           currentSection = "Sharing";
-          currentItems = [];
-        } else if (sermonMatch || messageMatch) {
-          if (currentSection && currentItems.length > 0) {
-            parsedSections[currentSection as keyof typeof parsedSections].push(...currentItems);
-          }
-          currentSection = "Sermon";
           currentItems = [];
         } else if (currentSection) {
           // Extract bullet point text (handle various bullet formats: ➤, •, -, *, or numbered)
@@ -1089,6 +1097,18 @@ function ReviewPageContent() {
         parsedSections[currentSection as keyof typeof parsedSections].push(...currentItems);
       }
       
+      // If summary put speaker in a bullet (e.g. "Speaker: Joe Swartzentruber"), use it for MESSAGE header and remove from bullets
+      if (!messageSpeakerFromSummary && parsedSections.Sermon.length > 0) {
+        const speakerBulletIndex = parsedSections.Sermon.findIndex((item) => /^Speaker:\s*(.+)$/i.test(item));
+        if (speakerBulletIndex >= 0) {
+          const match = parsedSections.Sermon[speakerBulletIndex].match(/^Speaker:\s*(.+)$/i);
+          if (match && match[1].trim()) {
+            messageSpeakerFromSummary = match[1].trim();
+            parsedSections.Sermon.splice(speakerBulletIndex, 1);
+          }
+        }
+      }
+      
       // If no items were parsed into sections, put everything in Sermon
       const totalItems = Object.values(parsedSections).reduce((sum, items) => sum + items.length, 0);
       if (totalItems === 0) {
@@ -1100,24 +1120,29 @@ function ReviewPageContent() {
         }).filter(item => item.length > 5);
       }
       
-      // ANNOUNCEMENTS section (always show, even if empty) - modern header style
+      // Section header style: blue (not black) so headers are clearly distinct; app-controlled, not forced by editor
+      const sectionHeaderStyle = {
+        color: "1976D2" as const, // Blue – intentionally not black
+        bold: true,
+        size: 22 as const,
+      };
+      // Light background that contrasts with blue header text (not black)
+      const sectionHeaderShading = { fill: "D1E9FF", type: ShadingType.SOLID as const }; // Soft light blue
+      const sectionHeaderBorder = {
+        top: { style: BorderStyle.SINGLE, size: 3, color: "1976D2" },
+        bottom: { style: BorderStyle.SINGLE, size: 3, color: "1976D2" },
+      };
+
+      // ANNOUNCEMENTS header (always show, even if empty)
       docElements.push(new Paragraph({
         children: [
           new TextRun({
             text: "ANNOUNCEMENTS",
-            color: "000000", // Black text
-            bold: true,
-            size: 22, // Reduced to fit on page
+            ...sectionHeaderStyle,
           }),
         ],
-        shading: {
-          fill: "E3F2FD", // Light blue modern background
-          type: ShadingType.SOLID,
-        },
-        border: {
-          top: { style: BorderStyle.SINGLE, size: 3, color: "1976D2" },
-          bottom: { style: BorderStyle.SINGLE, size: 3, color: "1976D2" },
-        },
+        shading: sectionHeaderShading,
+        border: sectionHeaderBorder,
         spacing: { after: 120 },
         indent: { left: 200 },
       }));
@@ -1150,24 +1175,16 @@ function ReviewPageContent() {
         }));
       }
       
-      // UPCOMING EVENTS section (always show, can be blank) - optimized for up to 6 items
+      // UPCOMING EVENTS header (always show, can be blank)
       docElements.push(new Paragraph({
         children: [
           new TextRun({
             text: "UPCOMING EVENTS",
-            color: "000000", // Black text
-            bold: true,
-            size: 22,
+            ...sectionHeaderStyle,
           }),
         ],
-        shading: {
-          fill: "E3F2FD", // Light blue modern background
-          type: ShadingType.SOLID,
-        },
-        border: {
-          top: { style: BorderStyle.SINGLE, size: 3, color: "1976D2" },
-          bottom: { style: BorderStyle.SINGLE, size: 3, color: "1976D2" },
-        },
+        shading: sectionHeaderShading,
+        border: sectionHeaderBorder,
         spacing: { before: 100, after: 100 },
         indent: { left: 200 },
       }));
@@ -1205,24 +1222,16 @@ function ReviewPageContent() {
         }
       }
       
-      // PRAYER & SHARING section (always show, even if empty)
+      // SHARING header (always show, even if empty)
       docElements.push(new Paragraph({
         children: [
           new TextRun({
-            text: "PRAYER & SHARING",
-            color: "000000", // Black text
-            bold: true,
-            size: 22,
+            text: "SHARING",
+            ...sectionHeaderStyle,
           }),
         ],
-        shading: {
-          fill: "E3F2FD", // Light blue modern background
-          type: ShadingType.SOLID,
-        },
-        border: {
-          top: { style: BorderStyle.SINGLE, size: 3, color: "1976D2" },
-          bottom: { style: BorderStyle.SINGLE, size: 3, color: "1976D2" },
-        },
+        shading: sectionHeaderShading,
+        border: sectionHeaderBorder,
         spacing: { before: 100, after: 100 },
         indent: { left: 200 },
       }));
@@ -1281,25 +1290,18 @@ function ReviewPageContent() {
         }
       }
       
-      // SERMON section (always show) - include speaker name in header
-      const sermonTitle = speakerName ? `SERMON – ${speakerName.toUpperCase()}` : "SERMON";
+      // MESSAGE header (always show) - all caps then tagged speaker name, e.g. "MESSAGE: Joe Swartzentruber"
+      const messageSpeaker = speakerName || messageSpeakerFromSummary;
+      const messageTitle = messageSpeaker ? `MESSAGE: ${messageSpeaker}` : "MESSAGE";
       docElements.push(new Paragraph({
         children: [
           new TextRun({
-            text: sermonTitle,
-            color: "000000", // Black text
-            bold: true,
-            size: 22,
+            text: messageTitle,
+            ...sectionHeaderStyle,
           }),
         ],
-        shading: {
-          fill: "E3F2FD", // Light blue modern background
-          type: ShadingType.SOLID,
-        },
-        border: {
-          top: { style: BorderStyle.SINGLE, size: 3, color: "1976D2" },
-          bottom: { style: BorderStyle.SINGLE, size: 3, color: "1976D2" },
-        },
+        shading: sectionHeaderShading,
+        border: sectionHeaderBorder,
         spacing: { before: 100, after: 100 },
         indent: { left: 200 },
       }));

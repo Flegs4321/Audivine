@@ -876,10 +876,9 @@ function RecorderPageContent() {
         return chunk;
       });
       
-      // Insert speaker name as a special chunk in the transcript
-      // Format: "Name - speaking:" so OpenAI can recognize it
+      // Insert speaker name as a special chunk in the transcript (says "sermon speaker" so transcript is clear)
       const speakerChunk: TranscriptChunk = {
-        text: `${speakerName} - speaking:`,
+        text: `${speakerName} - sermon speaker:`,
         timestampMs: currentMs,
         isFinal: true,
         speaker: speakerName,
@@ -1895,7 +1894,7 @@ function RecorderPageContent() {
                       const displayed = transcriptChunks.slice(-MAX_DISPLAYED_TRANSCRIPT_CHUNKS);
                       return displayed.map((chunk, index) => {
                         const isSpeakerTag = chunk.speakerTag === true;
-                        const isSermonTag = isSpeakerTag && (chunk.text.includes(" speaking:") || chunk.text.includes(" speaking:]"));
+                        const isSermonTag = isSpeakerTag && (chunk.text.includes(" speaking:") || chunk.text.includes(" speaking:]") || chunk.text.includes(" sermon speaker:"));
                         const isSharingTag = isSpeakerTag && (chunk.text.includes(" sharing:") || chunk.text.includes(" sharing:]"));
                         const isLastChunk = index === displayed.length - 1;
                         const hasSpeaker = chunk.speaker && !isSpeakerTag;
