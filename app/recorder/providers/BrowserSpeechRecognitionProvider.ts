@@ -5,6 +5,8 @@ interface SpeechRecognition extends EventTarget {
   continuous: boolean;
   interimResults: boolean;
   lang: string;
+  /** Chrome 139+: use on-device recognition (avoids sending audio to Google; works on all origins) */
+  processLocally?: boolean;
   start(): void;
   stop(): void;
   onresult: ((event: SpeechRecognitionEvent) => void) | null;
@@ -82,6 +84,11 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
     this.recognition.continuous = true;
     this.recognition.interimResults = true;
     this.recognition.lang = "en-US";
+    // On Chrome 139+, use on-device recognition so it works on deployed sites (Vercel);
+    // cloud recognition can fail or batch results only at end on non-localhost origins.
+    if ("processLocally" in this.recognition) {
+      (this.recognition as SpeechRecognition).processLocally = true;
+    }
 
     this.recognition.onresult = (event) => {
       if (!this.textChunkCallback) {
