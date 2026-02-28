@@ -1122,12 +1122,12 @@ function ReviewPageContent() {
       
       // Section header style: blue (not black) so headers are clearly distinct; app-controlled, not forced by editor
       const sectionHeaderStyle = {
-        color: "1976D2" as const, // Blue – intentionally not black
+        color: "1976D2",
         bold: true,
-        size: 22 as const,
+        size: 22,
       };
       // Light background that contrasts with blue header text (not black)
-      const sectionHeaderShading = { fill: "D1E9FF", type: ShadingType.SOLID as const }; // Soft light blue
+      const sectionHeaderShading = { fill: "D1E9FF", type: ShadingType.SOLID };
       const sectionHeaderBorder = {
         top: { style: BorderStyle.SINGLE, size: 3, color: "1976D2" },
         bottom: { style: BorderStyle.SINGLE, size: 3, color: "1976D2" },
