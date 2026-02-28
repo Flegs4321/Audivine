@@ -58,6 +58,7 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
   private lastProcessedIndex: number = 0; // Track the last result index we've processed
   private sentFinalTexts: Set<string> = new Set(); // Track final texts we've already sent
   private isRunning: boolean = false; // Track if we're supposed to be running
+  private noSpeechCount: number = 0; // For logging no-speech (browser often ends without results)
 
   constructor() {
     // Initialize SpeechRecognition if available
@@ -145,10 +146,16 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
       const errorType = event.error?.toLowerCase() || "";
       
       // "no-speech" is a common, non-critical error that occurs when no speech is detected
-      // It's expected behavior and not a real problem - the browser just times out
       if (errorType === "no-speech" || errorType === "no_speech") {
-        // Silently handle - this is normal when there's silence
-        // Recognition will automatically restart via onend handler
+        this.noSpeechCount++;
+        // Log occasionally so user knows why live transcript may be empty
+        if (this.noSpeechCount === 1 || this.noSpeechCount % 3 === 0) {
+          console.warn(
+            "[BrowserSpeechRecognition] No speech detected (count:",
+            this.noSpeechCount,
+            "). Check mic and speak clearly; live transcript needs audio input."
+          );
+        }
         return;
       }
       
@@ -172,17 +179,19 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
 
     this.recognition.onend = () => {
       console.log(`[BrowserSpeechRecognition] onend fired, isRunning: ${this.isRunning}, callback present: ${!!this.textChunkCallback}`);
-      // Auto-restart if we're still supposed to be running
-      // This handles cases where recognition stops due to "no-speech" or other recoverable errors
+      // Auto-restart if we're still supposed to be running. Delay slightly so the browser
+      // can clean up; some implementations misbehave if we call start() synchronously in onend.
       if (this.isRunning && this.recognition && this.textChunkCallback) {
-        try {
-          console.log("[BrowserSpeechRecognition] Auto-restarting recognition after onend");
-          this.recognition.start();
-        } catch (error) {
-          // If restart fails (e.g., already started), that's okay
-          // The recognition might have already restarted automatically
-          console.log("[BrowserSpeechRecognition] Auto-restart failed (might already be started):", error);
-        }
+        const rec = this.recognition;
+        setTimeout(() => {
+          if (!this.isRunning || !this.textChunkCallback) return;
+          try {
+            console.log("[BrowserSpeechRecognition] Auto-restarting recognition after onend");
+            rec.start();
+          } catch (error) {
+            console.log("[BrowserSpeechRecognition] Auto-restart failed (might already be started):", error);
+          }
+        }, 200);
       } else {
         if (!this.isRunning) {
           console.log("[BrowserSpeechRecognition] Not auto-restarting - isRunning is false");
@@ -226,9 +235,10 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
 
     // Reset state for new recording session
     this.startTimeMs = Date.now();
-    this.lastProcessedIndex = 0; // Reset processed index when starting
-    this.sentFinalTexts.clear(); // Clear sent texts when starting
-    this.isRunning = true; // Mark that we're running
+    this.lastProcessedIndex = 0;
+    this.sentFinalTexts.clear();
+    this.noSpeechCount = 0;
+    this.isRunning = true;
 
     try {
       this.recognition.start();

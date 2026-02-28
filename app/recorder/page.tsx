@@ -413,36 +413,21 @@ function RecorderPageContent() {
       // Reset seen final texts to prevent duplicates from previous recordings
       seenFinalTextsRef.current.clear();
       
-      // Start browser transcription if available and user hasn't selected OpenAI
-      // Always use browser transcription for live display
-      // If OpenAI is selected, Whisper will replace it after upload for better accuracy
+      // Start browser transcription if available. Delay so the mic stream is active first;
+      // starting recognition before the mic is "warm" often yields no results (onend/no-speech).
       if (transcription.isAvailable) {
-        try {
-          // CRITICAL: Register callback BEFORE starting transcription
-          // This ensures the callback is set up when the recognition object is created
-          if (transcriptionCallbackRef.current) {
-            console.log("[Recorder] Registering callback before starting transcription...");
-            transcription.onTextChunk(transcriptionCallbackRef.current);
-          } else {
-            console.warn("[Recorder] Callback not ready yet, transcription may not work!");
+        const startTranscription = async () => {
+          try {
+            if (transcriptionCallbackRef.current) {
+              transcription.onTextChunk(transcriptionCallbackRef.current);
+            }
+            await new Promise((r) => setTimeout(r, 500)); // Let mic stream stabilize
+            await transcription.start();
+          } catch (err) {
+            console.error("[Recorder] Failed to start transcription:", err);
           }
-          
-          console.log("[Recorder] Starting browser transcription for live display...");
-          await transcription.start();
-          console.log("[Recorder] Browser transcription started successfully");
-          
-          // CRITICAL: Re-register callback AFTER starting transcription
-          // This ensures the callback is set up after the recognition object is recreated
-          if (transcriptionCallbackRef.current) {
-            console.log("[Recorder] Re-registering callback after starting transcription...");
-            transcription.onTextChunk(transcriptionCallbackRef.current);
-          }
-        } catch (err) {
-          console.error("[Recorder] Failed to start transcription:", err);
-          // Continue recording even if transcription fails
-        }
-      } else {
-        console.warn("[Recorder] Transcription not available");
+        };
+        void startTranscription();
       }
     } catch (err) {
       console.error("Error starting recording:", err);
