@@ -62,6 +62,8 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
   private isRunning: boolean = false; // Track if we're supposed to be running
   private noSpeechCount: number = 0; // For logging no-speech (browser often ends without results)
   private onNoSpeechCallback: (() => void) | null = null;
+  /** When true, skip processLocally (on-device requires language pack; fall back to cloud) */
+  private useCloudFallback: boolean = false;
 
   constructor() {
     const SpeechRecognitionClass =
@@ -84,9 +86,9 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
     this.recognition.continuous = true;
     this.recognition.interimResults = true;
     this.recognition.lang = "en-US";
-    // On Chrome 139+, use on-device recognition so it works on deployed sites (Vercel);
-    // cloud recognition can fail or batch results only at end on non-localhost origins.
-    if ("processLocally" in this.recognition) {
+    // On Chrome 139+, use on-device recognition so it works on deployed sites (Vercel).
+    // If the device doesn't have the language pack we get language-not-supported and fall back to cloud.
+    if (!this.useCloudFallback && "processLocally" in this.recognition) {
       (this.recognition as SpeechRecognition).processLocally = true;
     }
 
@@ -172,21 +174,36 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
       }
       
       // "aborted" occurs when recognition is stopped/interrupted (e.g., when pausing recording)
-      // This is expected behavior and not an error
       if (errorType === "aborted") {
-        // Silently handle - this is normal when stopping/pausing
+        return;
+      }
+
+      // On-device (processLocally) requires the language pack to be installed. If not, fall back to cloud.
+      if (errorType === "language-not-supported" || errorType === "language_not_supported") {
+        if (!this.useCloudFallback && this.isRunning) {
+          this.useCloudFallback = true;
+          console.warn("[BrowserSpeechRecognition] On-device language not installed; falling back to cloud recognition.");
+          const SpeechRecognitionClass =
+            window.SpeechRecognition || window.webkitSpeechRecognition;
+          if (this.recognition && SpeechRecognitionClass) {
+            const savedCallback = this.textChunkCallback;
+            this.recognition = new SpeechRecognitionClass();
+            this.textChunkCallback = savedCallback;
+            this.setupRecognition();
+            try {
+              this.recognition.start();
+            } catch (e) {
+              console.error("[BrowserSpeechRecognition] Fallback start failed:", e);
+            }
+        }
         return;
       }
       
-      // Log other errors as warnings (not errors) since they're usually recoverable
       if (errorType === "audio-capture" || errorType === "network") {
         console.warn("Speech recognition warning:", event.error, event.message || "");
       } else {
-        // Only log actual errors for debugging
         console.error("Speech recognition error:", event.error, event.message || "");
       }
-      
-      // Continue running - most errors are recoverable
     };
 
     this.recognition.onend = () => {
@@ -225,12 +242,11 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
       throw new Error("Speech recognition is not available");
     }
 
-    // Save the current callback before recreating
     const savedCallback = this.textChunkCallback;
-    
+    this.useCloudFallback = false; // Try on-device first each session
+
     console.log("[BrowserSpeechRecognition] Starting recognition, callback present:", !!savedCallback);
 
-    // Recreate recognition object for clean state
     this.recognition = new SpeechRecognitionClass();
     
     // Restore callback BEFORE setupRecognition so it's available in the onresult handler
