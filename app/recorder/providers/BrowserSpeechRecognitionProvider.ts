@@ -195,6 +195,7 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
             } catch (e) {
               console.error("[BrowserSpeechRecognition] Fallback start failed:", e);
             }
+          }
         }
         return;
       }
