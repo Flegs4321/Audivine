@@ -1879,6 +1879,13 @@ function RecorderPageContent() {
                       Browser Speech Recognition is not available in this browser.
                     </p>
                   </div>
+                ) : transcriptChunks.length === 0 && transcription.noSpeechDetected ? (
+                  <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg text-amber-800 text-sm">
+                    <p className="font-medium mb-1">Live transcript not receiving audio</p>
+                    <p className="text-xs mb-2">
+                      The browser isn’t detecting speech. Check that your microphone is allowed, the correct input device is selected, and try speaking clearly. You’ll still get a transcript after recording (Whisper).
+                    </p>
+                  </div>
                 ) : transcriptChunks.length === 0 ? (
                   <div className="text-center text-gray-400 mt-8">
                     Transcript will appear here while recording...

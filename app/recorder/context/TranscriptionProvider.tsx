@@ -10,6 +10,8 @@ interface TranscriptionContextType {
   providerName: string | null;
   isAvailable: boolean;
   isActive: boolean;
+  /** True when the browser reported "no speech" (mic not detected by speech API) */
+  noSpeechDetected: boolean;
   start: () => Promise<void>;
   stop: () => void;
   onTextChunk: (callback: (chunk: TranscriptChunk) => void) => void;
@@ -20,7 +22,7 @@ const TranscriptionContext = createContext<TranscriptionContextType | undefined>
 export function TranscriptionProviderComponent({ children }: { children: React.ReactNode }) {
   const [provider, setProvider] = useState<ITranscriptionProvider | null>(null);
   const [isActive, setIsActive] = useState(false);
-  // Store the page's callback in a ref so it's always current (no async state / stale closure)
+  const [noSpeechDetected, setNoSpeechDetected] = useState(false);
   const chunkCallbackRef = useRef<((chunk: TranscriptChunk) => void) | null>(null);
   // Single stable wrapper: forwards chunks to whatever callback is currently in the ref
   const stableWrapperRef = useRef<((chunk: TranscriptChunk) => void) | null>(null);
@@ -29,6 +31,7 @@ export function TranscriptionProviderComponent({ children }: { children: React.R
   useEffect(() => {
     const browserProvider = new BrowserSpeechRecognitionProvider();
     if (browserProvider.isAvailable()) {
+      browserProvider.setOnNoSpeech(() => setNoSpeechDetected(true));
       setProvider(browserProvider);
       return;
     }
@@ -44,6 +47,7 @@ export function TranscriptionProviderComponent({ children }: { children: React.R
     if (!provider) {
       throw new Error("No transcription provider available");
     }
+    setNoSpeechDetected(false);
     await provider.start();
     setIsActive(true);
     if (stableWrapperRef.current) {
@@ -89,6 +93,7 @@ export function TranscriptionProviderComponent({ children }: { children: React.R
     providerName: provider?.getProviderName() || null,
     isAvailable: provider?.isAvailable() ?? false,
     isActive,
+    noSpeechDetected,
     start,
     stop,
     onTextChunk,

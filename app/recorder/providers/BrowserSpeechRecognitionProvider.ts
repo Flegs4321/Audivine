@@ -59,9 +59,9 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
   private sentFinalTexts: Set<string> = new Set(); // Track final texts we've already sent
   private isRunning: boolean = false; // Track if we're supposed to be running
   private noSpeechCount: number = 0; // For logging no-speech (browser often ends without results)
+  private onNoSpeechCallback: (() => void) | null = null;
 
   constructor() {
-    // Initialize SpeechRecognition if available
     const SpeechRecognitionClass =
       window.SpeechRecognition || window.webkitSpeechRecognition;
 
@@ -69,6 +69,11 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
       this.recognition = new SpeechRecognitionClass();
       this.setupRecognition();
     }
+  }
+
+  /** Optional: called when the browser reports "no speech" so the UI can show a hint */
+  setOnNoSpeech(callback: (() => void) | null): void {
+    this.onNoSpeechCallback = callback;
   }
 
   private setupRecognition() {
@@ -148,7 +153,7 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
       // "no-speech" is a common, non-critical error that occurs when no speech is detected
       if (errorType === "no-speech" || errorType === "no_speech") {
         this.noSpeechCount++;
-        // Log occasionally so user knows why live transcript may be empty
+        if (this.noSpeechCount === 1) this.onNoSpeechCallback?.();
         if (this.noSpeechCount === 1 || this.noSpeechCount % 3 === 0) {
           console.warn(
             "[BrowserSpeechRecognition] No speech detected (count:",
