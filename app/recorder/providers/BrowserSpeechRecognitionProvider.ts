@@ -170,14 +170,24 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
     };
 
     this.recognition.onend = () => {
+      console.log(`[BrowserSpeechRecognition] onend fired, isRunning: ${this.isRunning}, callback present: ${!!this.textChunkCallback}`);
       // Auto-restart if we're still supposed to be running
       // This handles cases where recognition stops due to "no-speech" or other recoverable errors
-      if (this.isRunning && this.recognition) {
+      if (this.isRunning && this.recognition && this.textChunkCallback) {
         try {
+          console.log("[BrowserSpeechRecognition] Auto-restarting recognition after onend");
           this.recognition.start();
         } catch (error) {
           // If restart fails (e.g., already started), that's okay
           // The recognition might have already restarted automatically
+          console.log("[BrowserSpeechRecognition] Auto-restart failed (might already be started):", error);
+        }
+      } else {
+        if (!this.isRunning) {
+          console.log("[BrowserSpeechRecognition] Not auto-restarting - isRunning is false");
+        }
+        if (!this.textChunkCallback) {
+          console.warn("[BrowserSpeechRecognition] Not auto-restarting - no callback set!");
         }
       }
     };
@@ -235,11 +245,18 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
 
   onTextChunk(callback: (chunk: TranscriptChunk) => void): void {
     console.log("[BrowserSpeechRecognition] onTextChunk called, setting callback");
-    this.textChunkCallback = callback;
+    // CRITICAL: Only update callback if it's different or null
+    // Re-setting the same callback while recognition is running can cause issues
+    if (this.textChunkCallback !== callback) {
+      this.textChunkCallback = callback;
+      console.log("[BrowserSpeechRecognition] Callback updated");
+    } else {
+      console.log("[BrowserSpeechRecognition] Callback unchanged, skipping update to avoid interrupting recognition");
+    }
     // If recognition is already set up, we need to ensure the callback is available
     // The onresult handler will use this.textChunkCallback
     if (this.recognition) {
-      console.log("[BrowserSpeechRecognition] Callback set, recognition object exists");
+      console.log("[BrowserSpeechRecognition] Callback set, recognition object exists and is", this.isRunning ? "running" : "stopped");
     }
   }
 

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { createContext, useContext, useState, useCallback, useEffect } from "react";
+import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from "react";
 import { BrowserSpeechRecognitionProvider } from "../providers/BrowserSpeechRecognitionProvider";
 import { RealtimeApiProvider } from "../providers/RealtimeApiProvider";
 import type { TranscriptionProvider as ITranscriptionProvider, TranscriptChunk } from "../types/transcription";
@@ -20,25 +20,23 @@ const TranscriptionContext = createContext<TranscriptionContextType | undefined>
 export function TranscriptionProviderComponent({ children }: { children: React.ReactNode }) {
   const [provider, setProvider] = useState<ITranscriptionProvider | null>(null);
   const [isActive, setIsActive] = useState(false);
-  const [textChunkCallback, setTextChunkCallback] = useState<((chunk: TranscriptChunk) => void) | null>(null);
+  // Store the page's callback in a ref so it's always current (no async state / stale closure)
+  const chunkCallbackRef = useRef<((chunk: TranscriptChunk) => void) | null>(null);
+  // Single stable wrapper: forwards chunks to whatever callback is currently in the ref
+  const stableWrapperRef = useRef<((chunk: TranscriptChunk) => void) | null>(null);
 
   // Initialize provider on mount
   useEffect(() => {
-    // Try browser provider first
     const browserProvider = new BrowserSpeechRecognitionProvider();
     if (browserProvider.isAvailable()) {
       setProvider(browserProvider);
       return;
     }
-
-    // Try realtime provider as fallback (when implemented)
     const realtimeProvider = new RealtimeApiProvider();
     if (realtimeProvider.isAvailable()) {
       setProvider(realtimeProvider);
       return;
     }
-
-    // No provider available
     setProvider(null);
   }, []);
 
@@ -46,43 +44,34 @@ export function TranscriptionProviderComponent({ children }: { children: React.R
     if (!provider) {
       throw new Error("No transcription provider available");
     }
-
-    // Callback is already set up via useEffect, don't set it again here
-    // This prevents duplicate callback registration
-
     await provider.start();
     setIsActive(true);
+    if (stableWrapperRef.current) {
+      provider.onTextChunk(stableWrapperRef.current);
+    }
   }, [provider]);
 
   const stop = useCallback(() => {
-    if (provider) {
-      provider.stop();
-    }
+    if (provider) provider.stop();
     setIsActive(false);
   }, [provider]);
 
   const onTextChunk = useCallback((callback: (chunk: TranscriptChunk) => void) => {
-    setTextChunkCallback(() => callback);
-    // Don't set callback here - let the useEffect handle it to avoid duplicates
+    chunkCallbackRef.current = callback;
   }, []);
 
-  // Update callback on provider when it changes
-  // This ensures the callback is only set once per provider
+  // Register a single stable wrapper with the engine when provider exists.
+  // The wrapper reads chunkCallbackRef.current on each chunk, so the page can set the ref anytime.
   useEffect(() => {
-    if (provider && textChunkCallback) {
-      provider.onTextChunk(textChunkCallback);
-    }
-  }, [provider, textChunkCallback]);
-  
-  // Also re-register callback when provider starts (for pause/resume scenarios)
-  // This ensures callback is re-registered after recognition object is recreated
-  useEffect(() => {
-    if (provider && textChunkCallback && isActive) {
-      // Re-register callback when transcription becomes active
-      // This handles the case where recognition object was recreated in start()
-      provider.onTextChunk(textChunkCallback);
-    }
-  }, [provider, textChunkCallback, isActive]);
+    if (!provider) return;
+    const wrapper = (chunk: TranscriptChunk) => {
+      if (chunk == null) return;
+      const fn = chunkCallbackRef.current;
+      if (typeof fn === "function") fn(chunk);
+    };
+    stableWrapperRef.current = wrapper;
+    provider.onTextChunk(wrapper);
+  }, [provider]);
 
   const value: TranscriptionContextType = {
     provider,

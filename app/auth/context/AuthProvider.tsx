@@ -21,12 +21,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let mounted = true;
 
+    // Don't block the UI forever if getSession hangs (e.g. CORS or network)
+    const fallbackTimer = setTimeout(() => {
+      if (mounted) {
+        setLoading(false);
+      }
+    }, 5000);
+
     // Get initial session
     const initializeAuth = async () => {
       try {
         const { data: { session }, error } = await supabase.auth.getSession();
         if (error) {
-          console.error("Error getting session:", error);
+          console.warn("Session error, signing out to clear stale token:", error.message);
+          await supabase.auth.signOut();
         }
         if (mounted) {
           setUser(session?.user ?? null);
@@ -37,6 +45,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (mounted) {
           setLoading(false);
         }
+      } finally {
+        clearTimeout(fallbackTimer);
       }
     };
 
@@ -48,7 +58,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (!mounted) return;
 
-      console.log("Auth state changed:", event, session?.user?.email);
+      if (process.env.NODE_ENV === "development") {
+        console.log("Auth state changed:", event, session?.user?.email);
+      }
 
       // Immediately update user state and clear loading for all events
       if (mounted) {
@@ -62,6 +74,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     return () => {
       mounted = false;
+      clearTimeout(fallbackTimer);
       subscription.unsubscribe();
     };
   }, []);

@@ -672,6 +672,8 @@ function RecorderPageContent() {
       // Retroactively apply speaker to chunks without a speaker
       // But stop if there's a gap of more than 12 seconds between consecutive chunks
       const MAX_RETROACTIVE_GAP_MS = 12000; // 12 seconds
+      // Don't attribute the phrase you just said (e.g. "this is now sharing time") to the person you're tagging
+      const MIN_AGE_FOR_RETROACTIVE_MS = 4000; // 4 seconds: chunks within 4s of "now" are left untagged
       let lastProcessedTimestamp = currentMs;
       let shouldContinue = true;
       
@@ -679,6 +681,10 @@ function RecorderPageContent() {
         if (!shouldContinue) return chunk;
         
         if (index >= startIndex && !chunk.speakerTag && !chunk.speaker) {
+          // Skip chunks that are too recent (likely the transition phrase you just said)
+          const ageMs = currentMs - chunk.timestampMs;
+          if (ageMs < MIN_AGE_FOR_RETROACTIVE_MS) return chunk;
+          
           // Check if there's a gap of more than 12 seconds from the last processed chunk
           const timeGap = lastProcessedTimestamp - chunk.timestampMs;
           
@@ -701,12 +707,10 @@ function RecorderPageContent() {
             }
           }
           
-          // Format: "Speaker - text" instead of "[Speaker]: text"
-          const originalText = chunk.text.replace(/^\[[^\]]+\]:\s*/, '').replace(/^[^-]+\s*-\s*/, '');
+          // Apply speaker as metadata only; do not rewrite chunk text (avoids repeating speaker name in transcript)
           lastProcessedTimestamp = chunk.timestampMs;
           return {
             ...chunk,
-            text: `${memberName} - ${originalText}`,
             speaker: memberName,
           };
         }
@@ -737,26 +741,14 @@ function RecorderPageContent() {
       setMemberSearchQuery("");
     }
 
-    // Ensure transcription continues after dropdown interaction
-    // Sometimes clicking buttons can cause focus loss that stops recognition
-    if (state === "recording" && transcription.isAvailable) {
-      // Always re-register callback to ensure it's set up
-      if (transcriptionCallbackRef.current) {
-        transcription.onTextChunk(transcriptionCallbackRef.current);
-      }
-      
-      // Restart if not active
-      if (!transcription.isActive) {
-        try {
-          console.log("[Recorder] Restarting transcription after speaker selection...");
-          await transcription.start();
-          // Re-register callback after start to ensure it's set up
-          if (transcriptionCallbackRef.current) {
-            transcription.onTextChunk(transcriptionCallbackRef.current);
-          }
-        } catch (err) {
-          console.error("[Recorder] Failed to restart transcription after speaker selection:", err);
-        }
+    // Only restart transcription if it actually stopped (e.g. focus loss). Do not re-register callback.
+    if (state === "recording" && transcription.isAvailable && !transcription.isActive) {
+      try {
+        console.log("[Recorder] Transcription stopped, restarting after speaker selection...");
+        await transcription.start();
+        console.log("[Recorder] Transcription restarted successfully");
+      } catch (err) {
+        console.error("[Recorder] Failed to restart transcription after speaker selection:", err);
       }
     }
   };
@@ -817,6 +809,8 @@ function RecorderPageContent() {
       // Retroactively apply speaker to chunks without a speaker
       // But stop if there's a gap of more than 12 seconds between consecutive chunks
       const MAX_RETROACTIVE_GAP_MS = 12000; // 12 seconds
+      // Don't attribute the phrase you just said (e.g. "we'll now hear from...") to the speaker you're tagging
+      const MIN_AGE_FOR_RETROACTIVE_MS = 4000; // 4 seconds: chunks within 4s of "now" are left untagged
       let lastProcessedTimestamp = currentMs;
       let shouldContinue = true;
       
@@ -824,6 +818,10 @@ function RecorderPageContent() {
         if (!shouldContinue) return chunk;
         
         if (index >= startIndex && !chunk.speakerTag && !chunk.speaker) {
+          // Skip chunks that are too recent (likely the transition phrase you just said)
+          const ageMs = currentMs - chunk.timestampMs;
+          if (ageMs < MIN_AGE_FOR_RETROACTIVE_MS) return chunk;
+          
           // Check if there's a gap of more than 12 seconds from the last processed chunk
           const timeGap = lastProcessedTimestamp - chunk.timestampMs;
           
@@ -846,12 +844,10 @@ function RecorderPageContent() {
             }
           }
           
-          // Format: "Speaker - text"
-          const originalText = chunk.text.replace(/^\[[^\]]+\]:\s*/, '').replace(/^[^-]+\s*-\s*/, '');
+          // Apply speaker as metadata only; do not rewrite chunk text (avoids repeating speaker name in transcript)
           lastProcessedTimestamp = chunk.timestampMs;
           return {
             ...chunk,
-            text: `${speakerName} - ${originalText}`,
             speaker: speakerName,
           };
         }
@@ -877,26 +873,14 @@ function RecorderPageContent() {
     setShowSermonSpeakerDropdown(false);
     setSermonSpeakerSearchQuery("");
 
-    // Ensure transcription continues after dropdown interaction
-    // Sometimes clicking buttons can cause focus loss that stops recognition
-    if (state === "recording" && transcription.isAvailable) {
-      // Always re-register callback to ensure it's set up
-      if (transcriptionCallbackRef.current) {
-        transcription.onTextChunk(transcriptionCallbackRef.current);
-      }
-      
-      // Restart if not active
-      if (!transcription.isActive) {
-        try {
-          console.log("[Recorder] Restarting transcription after speaker selection...");
-          await transcription.start();
-          // Re-register callback after start to ensure it's set up
-          if (transcriptionCallbackRef.current) {
-            transcription.onTextChunk(transcriptionCallbackRef.current);
-          }
-        } catch (err) {
-          console.error("[Recorder] Failed to restart transcription after speaker selection:", err);
-        }
+    // Only restart transcription if it actually stopped. Do not re-register callback.
+    if (state === "recording" && transcription.isAvailable && !transcription.isActive) {
+      try {
+        console.log("[Recorder] Transcription stopped, restarting after sermon speaker selection...");
+        await transcription.start();
+        console.log("[Recorder] Transcription restarted successfully");
+      } catch (err) {
+        console.error("[Recorder] Failed to restart transcription after sermon speaker selection:", err);
       }
     }
   };
@@ -905,58 +889,27 @@ function RecorderPageContent() {
   // Use a ref to persist the seenFinalTexts Set across renders
   const seenFinalTextsRef = useRef<Set<string>>(new Set());
   const transcriptionCallbackRef = useRef<((chunk: TranscriptChunk) => void) | null>(null);
+  // Ref that holds the latest chunk handler so the forwarder always runs current logic (avoids stale closure)
+  const chunkHandlerRef = useRef<(chunk: TranscriptChunk) => void>(() => {});
 
-  // Create and register transcription callback
+  // Build the actual chunk handler and store in ref so it always has latest setTranscriptChunks etc.
   useEffect(() => {
     if (!transcription.isAvailable) return;
 
-    // Create the callback function
-    const callback = (chunk: TranscriptChunk) => {
-      console.log(`[Recorder] CALLBACK FIRED! Received chunk:`, {
-        text: chunk.text.substring(0, 50),
-        isFinal: chunk.isFinal,
-        timestampMs: chunk.timestampMs,
-        speaker: chunk.speaker,
-        speakerTag: chunk.speakerTag
-      });
-      
-      // Use ref for current speaker to ensure we have the latest value (ref is always current)
-      const speaker = currentSpeakerRef.current || undefined;
-      
-      console.log(`[Recorder] Processing chunk - speaker: ${speaker || 'NONE'}, ref: ${currentSpeakerRef.current || 'NONE'}, text: "${chunk.text.substring(0, 50)}..."`);
-      
-      // Format text with speaker name prefix if speaker is active
-      // Format: "Speaker - text" instead of "[Speaker]: text"
-      let formattedText = chunk.text;
-      if (speaker && !chunk.speakerTag) {
-        // Check if the text already has a speaker tag
-        // Old format: [Speaker]: text
-        // New format: Speaker - text (but be careful - this pattern could match regular text with dashes)
-        // Better: Check if it starts with a known speaker name pattern or old format
-        const hasOldFormat = /^\[[^\]]+\]:\s*/.test(chunk.text);
-        // For new format, check if it looks like "Name - " at the start (name followed by space-dash-space)
-        // This is more specific than just any dash
-        const hasNewFormat = /^[A-Za-z][A-Za-z\s]+\s+-\s+/.test(chunk.text);
-        
-        if (!hasOldFormat && !hasNewFormat) {
-          formattedText = `${speaker} - ${chunk.text}`;
-          console.log(`[Recorder] ✓ Added speaker prefix: "${formattedText.substring(0, 60)}..."`);
-        } else {
-          console.log(`[Recorder] ✗ Text already has speaker tag (old: ${hasOldFormat}, new: ${hasNewFormat}): ${chunk.text.substring(0, 50)}...`);
-        }
-      } else if (!speaker && !chunk.speakerTag) {
-        console.log(`[Recorder] ⚠ No speaker set for chunk: ${chunk.text.substring(0, 50)}...`);
+    const handleChunk = (chunk: TranscriptChunk) => {
+      if (!chunk || typeof chunk.text !== "string") {
+        console.warn("[Recorder] Ignoring invalid chunk:", chunk);
+        return;
       }
-      
-      // Add current speaker to chunk if one is set
+      const speaker = currentSpeakerRef.current || undefined;
+      // Store raw transcript text; do not prepend speaker name to every phrase (speaker appears once via tag + metadata)
       const chunkWithSpeaker: TranscriptChunk = {
         ...chunk,
-        text: formattedText, // Use formatted text with speaker name
+        text: chunk.text,
         speaker: speaker,
       };
 
       setTranscriptChunks((prev) => {
-        // If it's a speaker tag, add it directly and set current speaker
         if (chunk.speakerTag) {
           const updated = [...prev, chunk];
           transcriptChunksRef.current = updated;
@@ -964,60 +917,36 @@ function RecorderPageContent() {
           setCurrentSpeaker(chunk.speaker || null);
           return updated;
         }
-        
-        // If it's an interim result, replace the last interim chunk
         if (!chunkWithSpeaker.isFinal) {
-          // Replace the last chunk if it's also interim
           if (prev.length > 0 && !prev[prev.length - 1].isFinal) {
             return [...prev.slice(0, -1), chunkWithSpeaker];
           }
-          // Otherwise add as new interim chunk (but only if we haven't seen this as final)
-          // Use original text for comparison to avoid speaker prefix issues
           if (!seenFinalTextsRef.current.has(chunk.text)) {
             return [...prev, chunkWithSpeaker];
           }
           return prev;
         }
-        
-        // For final chunks, check if we've already added this exact text (using original text)
-        // This prevents duplicates from the Web Speech API
         if (seenFinalTextsRef.current.has(chunk.text)) {
-          // Already have this final chunk, don't add again
-          console.log("[Recorder] Skipping duplicate final chunk:", chunk.text);
           return prev;
         }
-        
-        // Mark as seen (using original text, not formatted)
         seenFinalTextsRef.current.add(chunk.text);
-        
-        // Remove any interim chunks that might overlap with this final chunk
-        // Filter out interim chunks that match the original text (before speaker prefix)
         const updated = [
           ...prev.filter(c => {
-            // Keep final chunks
             if (c.isFinal) return true;
-            // Remove interim chunks that match the original text
-            // Extract original text from chunks that might have speaker prefix (old or new format)
             const cOriginalText = c.text.replace(/^\[[^\]]+\]:\s*/, '').replace(/^[^-]+\s*-\s*/, '');
             return cOriginalText !== chunk.text;
           }),
           chunkWithSpeaker
         ];
         transcriptChunksRef.current = updated;
-        
-        // Limit stored chunks to prevent memory issues (but keep more than displayed for upload)
-        // Store up to 500 chunks, but only display the most recent 100
         if (updated.length > 500) {
-          // Keep the most recent 500 chunks
           const trimmed = updated.slice(-500);
           transcriptChunksRef.current = trimmed;
           return trimmed;
         }
-        
         return updated;
       });
-      
-      // Auto-scroll to bottom when new chunks arrive
+
       setTimeout(() => {
         if (transcriptEndRef.current) {
           transcriptEndRef.current.scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -1025,14 +954,12 @@ function RecorderPageContent() {
       }, 100);
     };
 
-    // Store callback in ref for re-registration
-    transcriptionCallbackRef.current = callback;
-    console.log("[Recorder] Callback created and stored in ref");
-
-    // Register callback with transcription provider
-    console.log("[Recorder] Registering callback with transcription provider...");
-    transcription.onTextChunk(callback);
-    console.log("[Recorder] Callback registered successfully");
+    chunkHandlerRef.current = handleChunk;
+    const forwarder = (chunk: TranscriptChunk) => {
+      chunkHandlerRef.current?.(chunk);
+    };
+    transcriptionCallbackRef.current = forwarder;
+    transcription.onTextChunk(forwarder);
   }, [transcription.isAvailable, transcription.onTextChunk]);
 
   // Re-register callback when transcription becomes active (after start/resume)
@@ -1436,6 +1363,9 @@ function RecorderPageContent() {
                                       {recentlyTaggedSpeakers.map((speakerName) => (
                                         <button
                                           key={speakerName}
+                                          type="button"
+                                          tabIndex={-1}
+                                          onMouseDown={(e) => e.preventDefault()}
                                           onClick={async (e) => {
                                             e.preventDefault();
                                             e.stopPropagation();
@@ -1456,7 +1386,7 @@ function RecorderPageContent() {
                                   value={memberSearchQuery}
                                   onChange={(e) => setMemberSearchQuery(e.target.value)}
                                   className="w-full px-3 py-2 mb-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
-                                  autoFocus={!keepDropdownOpen}
+                                  aria-label="Search speakers"
                                 />
                                 {sorted.length === 0 ? (
                                   <div className="text-center py-4 text-gray-500">
@@ -1470,6 +1400,9 @@ function RecorderPageContent() {
                                       return (
                                         <button
                                           key={member.id}
+                                          type="button"
+                                          tabIndex={-1}
+                                          onMouseDown={(e) => e.preventDefault()}
                                           onClick={async (e) => {
                                             e.preventDefault();
                                             e.stopPropagation();
@@ -1620,7 +1553,7 @@ function RecorderPageContent() {
                                   value={sermonSpeakerSearchQuery}
                                   onChange={(e) => setSermonSpeakerSearchQuery(e.target.value)}
                                   className="w-full px-3 py-2 mb-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
-                                  autoFocus
+                                  aria-label="Search sermon speakers"
                                 />
                                 {sorted.length === 0 ? (
                                   <div className="text-center py-4 text-gray-500">
@@ -1633,6 +1566,9 @@ function RecorderPageContent() {
                                       return (
                                         <button
                                           key={member.id}
+                                          type="button"
+                                          tabIndex={-1}
+                                          onMouseDown={(e) => e.preventDefault()}
                                           onClick={async (e) => {
                                             e.preventDefault();
                                             e.stopPropagation();
@@ -1900,68 +1836,68 @@ function RecorderPageContent() {
                   </div>
                 ) : (
                   <div className="space-y-3">
-                    {transcriptChunks.slice(-MAX_DISPLAYED_TRANSCRIPT_CHUNKS).map((chunk, index) => {
-                      // Check if this is a speaker tag
-                      const isSpeakerTag = chunk.speakerTag === true;
-                      const isSermonTag = isSpeakerTag && (chunk.text.includes(" speaking:") || chunk.text.includes(" speaking:]"));
-                      const isSharingTag = isSpeakerTag && (chunk.text.includes(" sharing:") || chunk.text.includes(" sharing:]"));
-                      const isLastChunk = index === transcriptChunks.slice(-MAX_DISPLAYED_TRANSCRIPT_CHUNKS).length - 1;
-                      const hasSpeaker = chunk.speaker && !isSpeakerTag; // Show speaker name if present and not a tag line
-                      
-                      return (
-                        <div
-                          key={index}
-                          ref={isLastChunk ? transcriptEndRef : null}
-                          className={`text-sm leading-relaxed animate-fade-in ${
-                            isSpeakerTag
-                              ? isSermonTag
-                                ? "bg-purple-100 border-l-4 border-purple-500 pl-3 py-2 rounded shadow-sm"
-                                : "bg-blue-100 border-l-4 border-blue-500 pl-3 py-2 rounded shadow-sm"
-                              : hasSpeaker
-                              ? "bg-green-50 border-l-2 border-green-300 pl-2 py-1"
-                              : chunk.isFinal
-                              ? "text-gray-700"
-                              : "text-gray-500 italic"
-                          }`}
-                        >
-                          <div className={`text-xs mb-1 font-mono ${
-                            isSpeakerTag 
-                              ? isSermonTag 
-                                ? "text-purple-700 font-semibold" 
-                                : "text-blue-700 font-semibold" 
-                              : hasSpeaker
-                              ? "text-green-700 font-semibold"
-                              : "text-gray-400"
-                          }`}>
-                            {formatTimeMs(chunk.timestampMs)}
-                            {hasSpeaker && (
-                              <span className="ml-2 text-green-600 font-medium">• {chunk.speaker}</span>
-                            )}
-                            {isSpeakerTag && (
-                              <span className="ml-2 text-xs">
-                                {isSermonTag ? "🎤 Sermon" : "💬 Sharing"}
-                              </span>
-                            )}
+                    {(() => {
+                      const displayed = transcriptChunks.slice(-MAX_DISPLAYED_TRANSCRIPT_CHUNKS);
+                      return displayed.map((chunk, index) => {
+                        const isSpeakerTag = chunk.speakerTag === true;
+                        const isSermonTag = isSpeakerTag && (chunk.text.includes(" speaking:") || chunk.text.includes(" speaking:]"));
+                        const isSharingTag = isSpeakerTag && (chunk.text.includes(" sharing:") || chunk.text.includes(" sharing:]"));
+                        const isLastChunk = index === displayed.length - 1;
+                        const hasSpeaker = chunk.speaker && !isSpeakerTag;
+                        // Show speaker name only once per speaker: when speaker changes or when first line after a speaker tag
+                        const prevChunk = index > 0 ? displayed[index - 1] : null;
+                        const showSpeakerLabel = hasSpeaker && (index === 0 || prevChunk?.speakerTag === true || prevChunk?.speaker !== chunk.speaker);
+
+                        return (
+                          <div
+                            key={index}
+                            ref={isLastChunk ? transcriptEndRef : null}
+                            className={`text-sm leading-relaxed animate-fade-in ${
+                              isSpeakerTag
+                                ? isSermonTag
+                                  ? "bg-purple-100 border-l-4 border-purple-500 pl-3 py-2 rounded shadow-sm"
+                                  : "bg-blue-100 border-l-4 border-blue-500 pl-3 py-2 rounded shadow-sm"
+                                : hasSpeaker
+                                ? "bg-green-50 border-l-2 border-green-300 pl-2 py-1"
+                                : chunk.isFinal
+                                ? "text-gray-700"
+                                : "text-gray-500 italic"
+                            }`}
+                          >
+                            <div className={`text-xs mb-1 font-mono ${
+                              isSpeakerTag 
+                                ? isSermonTag 
+                                  ? "text-purple-700 font-semibold" 
+                                  : "text-blue-700 font-semibold" 
+                                : hasSpeaker
+                                ? "text-green-700 font-semibold"
+                                : "text-gray-400"
+                            }`}>
+                              {formatTimeMs(chunk.timestampMs)}
+                              {showSpeakerLabel && (
+                                <span className="ml-2 text-green-600 font-medium">• {chunk.speaker}</span>
+                              )}
+                              {isSpeakerTag && (
+                                <span className="ml-2 text-xs">
+                                  {isSermonTag ? "🎤 Sermon" : "💬 Sharing"}
+                                </span>
+                              )}
+                            </div>
+                            <div className={`text-sm ${
+                              isSpeakerTag 
+                                ? isSermonTag
+                                  ? "text-purple-900 font-semibold"
+                                  : "text-blue-900 font-semibold" 
+                                : hasSpeaker
+                                ? "text-gray-800"
+                                : ""
+                            }`}>
+                              {chunk.text}
+                            </div>
                           </div>
-                          <div className={`text-sm ${
-                            isSpeakerTag 
-                              ? isSermonTag
-                                ? "text-purple-900 font-semibold"
-                                : "text-blue-900 font-semibold" 
-                              : hasSpeaker
-                              ? "text-gray-800"
-                              : ""
-                          }`}>
-                            {/* Display the text - it should already include "Speaker - " prefix if speaker is active */}
-                            {chunk.text}
-                            {/* Debug: Show if text has speaker prefix */}
-                            {process.env.NODE_ENV === 'development' && (/^\[[^\]]+\]:\s*/.test(chunk.text) || /^[^-]+\s*-\s*/.test(chunk.text)) && (
-                              <span className="ml-2 text-xs text-green-600">✓ Has speaker prefix</span>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
+                        );
+                      });
+                    })()}
                   </div>
                 )}
               </div>

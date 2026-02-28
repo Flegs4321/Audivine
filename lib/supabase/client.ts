@@ -8,11 +8,12 @@ const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
 let supabase: SupabaseClient;
 
 if (supabaseUrl && supabaseAnonKey) {
+  // CORS: In Supabase dashboard, add http://localhost:3000 under Authentication → URL Configuration → Redirect URLs (and Site URL).
   supabase = createClient(supabaseUrl, supabaseAnonKey, {
     auth: {
       autoRefreshToken: true,
       persistSession: true,
-      detectSessionInUrl: true, // Important: detects sessions from URL hash fragments
+      detectSessionInUrl: true,
     },
   });
 } else {
