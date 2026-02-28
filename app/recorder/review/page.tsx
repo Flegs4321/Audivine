@@ -34,6 +34,8 @@ function ReviewPageContent() {
   const [hasOpenAIKey, setHasOpenAIKey] = useState<boolean | null>(null);
   const [recording, setRecording] = useState<any>(null);
   const [churchSettings, setChurchSettings] = useState<{ church_name?: string; church_address?: string }>({});
+  const [fixRangeBySection, setFixRangeBySection] = useState<Record<string, { startSec: string; endSec: string; speaker: string }>>({});
+  const [assigningRange, setAssigningRange] = useState<Record<string, boolean>>({});
 
   // Load sections from recording
   useEffect(() => {
@@ -373,6 +375,58 @@ function ReviewPageContent() {
     }
   };
 
+  const handleDownloadSermonTranscript = (section: EditableSection) => {
+    if (section.label !== "Sermon") return;
+
+    const sermonStartMs = section.startMs;
+    const sermonEndMs = section.endMs ?? Infinity;
+
+    // Filter chunks that fall within the sermon time range
+    const sermonChunks = transcriptChunks.filter(
+      (chunk) => chunk.timestampMs >= sermonStartMs && chunk.timestampMs <= sermonEndMs
+    );
+
+    if (sermonChunks.length === 0) {
+      alert("No transcript found for the sermon segment.");
+      return;
+    }
+
+    // Build header
+    const churchName = churchSettings.church_name ?? "Church";
+    const date = recording?.created_at
+      ? new Date(recording.created_at).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })
+      : new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
+
+    let output = `Sermon Transcript\n${churchName} \u2013 ${date}\n\n`;
+
+    // Group by speaker changes; omit the synthetic "Name - speaking:" tag lines from the body
+    let currentSpeaker: string | null = null;
+    for (const chunk of sermonChunks) {
+      // Skip speaker-tag marker lines (they carry the speakerTag flag or end in "- speaking:" / "- sharing:")
+      if ((chunk as any).speakerTag) continue;
+
+      if (chunk.speaker && chunk.speaker !== currentSpeaker) {
+        currentSpeaker = chunk.speaker;
+        output += `\n${currentSpeaker} - speaking:\n`;
+      }
+
+      output += `${chunk.text} `;
+    }
+
+    output = output.trimEnd();
+
+    // Trigger download
+    const blob = new Blob([output], { type: "text/plain;charset=utf-8" });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `sermon-transcript-${recordingId ?? Date.now()}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    window.URL.revokeObjectURL(url);
+    document.body.removeChild(a);
+  };
+
   // Helper function to convert AudioBuffer to WAV blob
   const audioBufferToWav = (buffer: AudioBuffer): Blob => {
     const length = buffer.length;
@@ -475,13 +529,11 @@ function ReviewPageContent() {
         return;
       }
 
-      // Update chunks with speaker information
+      // Update chunks with speaker information (set speaker on ALL chunks in this section so tagged speaker is used everywhere, including member summary)
       const updatedChunks = transcriptChunks.map((chunk) => {
-        // If chunk is in this section and doesn't already have a speaker, add it
         if (
           chunk.timestampMs >= section.startMs &&
-          (section.endMs === null || chunk.timestampMs <= section.endMs) &&
-          !chunk.speaker
+          (section.endMs === null || chunk.timestampMs <= section.endMs)
         ) {
           return { ...chunk, speaker: speakerName };
         }
@@ -596,12 +648,92 @@ function ReviewPageContent() {
         }
       }
 
-      alert(`Successfully tagged ${speakerName} for ${section.label} section`);
+      alert(`Successfully tagged ${speakerName} for ${section.label === "Sermon" ? "Message" : section.label} section. ${section.label === "Sermon" ? "Generate summary for members to see \"MESSAGE: " + speakerName + "\"." : ""}`);
     } catch (err) {
       console.error("Error tagging speaker:", err);
       alert(err instanceof Error ? err.message : "Failed to tag speaker");
     } finally {
       setTaggingSpeaker((prev) => ({ ...prev, [sectionId]: false }));
+    }
+  };
+
+  const handleAssignSpeakerToRange = async (sectionId: string, startSec: string, endSec: string, speakerName: string) => {
+    const section = sections.find((s) => s.id === sectionId);
+    if (!recordingId || !section || !speakerName.trim()) return;
+    const startMs = Math.max(0, parseInt(startSec, 10) * 1000) || 0;
+    const endMs = parseInt(endSec, 10) * 1000;
+    if (Number.isNaN(endMs) || endMs <= startMs) {
+      alert("Please enter a valid time range (end must be after start, in seconds).");
+      return;
+    }
+    try {
+      setAssigningRange((prev) => ({ ...prev, [sectionId]: true }));
+      const { supabase } = await import("@/lib/supabase/client");
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) throw new Error("Not authenticated");
+
+      const updatedChunks = transcriptChunks.map((chunk) => {
+        const inSection = chunk.timestampMs >= section.startMs && (section.endMs == null || chunk.timestampMs <= section.endMs);
+        const inRange = chunk.timestampMs >= startMs && chunk.timestampMs <= endMs;
+        if (inSection && inRange) {
+          return { ...chunk, speaker: speakerName };
+        }
+        return chunk;
+      });
+
+      const response = await fetch(`/api/recordings/${recordingId}/transcript-chunks`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({ transcript_chunks: updatedChunks }),
+      });
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.message || errorData.error || "Failed to update transcript");
+      }
+      setTranscriptChunks(updatedChunks);
+      const count = updatedChunks.filter((c) => c.timestampMs >= startMs && c.timestampMs <= endMs && c.speaker === speakerName).length;
+      alert(`Assigned ${speakerName} to ${count} chunk(s) in the selected time range.`);
+      setFixRangeBySection((prev) => ({ ...prev, [sectionId]: { startSec: "", endSec: "", speaker: "" } }));
+
+      const recordResponse = await fetch(`/api/recordings/${recordingId}`, {
+        headers: { "Authorization": `Bearer ${session.access_token}` },
+      });
+      if (recordResponse.ok) {
+        const recordData = await recordResponse.json();
+        const rec = recordData.recording;
+        if (rec?.transcript_chunks) setTranscriptChunks(rec.transcript_chunks);
+        if (rec?.segments?.length > 0 && rec.segments[0].label) {
+          const updatedSections = rec.segments.map((s: FinalSection, i: number) => {
+            if (rec.transcript_chunks?.length) {
+              const sectionChunks = rec.transcript_chunks.filter(
+                (chunk: any) => chunk.timestampMs >= s.startMs && (s.endMs == null || chunk.timestampMs <= s.endMs)
+              );
+              let fullText = "";
+              let currentSpeaker: string | null = null;
+              for (const chunk of sectionChunks) {
+                if (chunk.speaker && chunk.speaker !== currentSpeaker) {
+                  if (!chunk.text.startsWith("[") || (!chunk.text.includes(" sharing:]") && !chunk.text.includes(" speaking:]"))) {
+                    fullText += `\n[${chunk.speaker}]: `;
+                  }
+                  currentSpeaker = chunk.speaker;
+                } else if (!chunk.speaker && currentSpeaker) currentSpeaker = null;
+                fullText += chunk.text + " ";
+              }
+              return { ...s, id: `section-${i}`, text: fullText.trim() };
+            }
+            return { ...s, id: `section-${i}` };
+          });
+          setSections(updatedSections);
+        }
+      }
+    } catch (err) {
+      console.error("Error assigning speaker to range:", err);
+      alert(err instanceof Error ? err.message : "Failed to assign speaker to range");
+    } finally {
+      setAssigningRange((prev) => ({ ...prev, [sectionId]: false }));
     }
   };
 
@@ -686,6 +818,22 @@ function ReviewPageContent() {
       // Combine all sections' transcripts
       const fullTranscript = sections.map((s) => s.text).join("\n\n");
 
+      // Get sermon speaker for MESSAGE header (most common speaker in Sermon section)
+      let sermonSpeakerName: string | null = null;
+      const sermonSection = sections.find((s) => s.label === "Sermon");
+      if (sermonSection && transcriptChunks.length > 0) {
+        const sermonChunks = transcriptChunks.filter(
+          (chunk) => chunk.timestampMs >= sermonSection.startMs &&
+            (sermonSection.endMs == null || chunk.timestampMs <= sermonSection.endMs) &&
+            chunk.speaker && chunk.speaker.trim() !== ""
+        );
+        if (sermonChunks.length > 0) {
+          const counts: Record<string, number> = {};
+          sermonChunks.forEach((c) => { if (c.speaker) counts[c.speaker] = (counts[c.speaker] || 0) + 1; });
+          sermonSpeakerName = Object.keys(counts).reduce((a, b) => counts[a] > counts[b] ? a : b);
+        }
+      }
+
       const response = await fetch("/api/sermons/generate-summary", {
         method: "POST",
         headers: {
@@ -695,6 +843,7 @@ function ReviewPageContent() {
         body: JSON.stringify({
           recordingId,
           transcript: fullTranscript,
+          sermonSpeakerName: sermonSpeakerName ?? undefined,
         }),
       });
 
@@ -711,7 +860,27 @@ function ReviewPageContent() {
       }
 
       const data = await response.json();
-      setFullSummary(data.summary);
+      let summaryText = data.summary;
+
+      // Ensure MESSAGE header shows the tagged sermon speaker (AI sometimes omits it)
+      if (sermonSpeakerName && summaryText && typeof summaryText === "string") {
+        const lines = summaryText.split("\n");
+        const messageHeaderPattern = /^([\d#\s.)\-]*)(MESSAGE)\s*:?\s*([^\n]*)$/im;
+        for (let i = 0; i < lines.length; i++) {
+          const m = lines[i].trim().match(messageHeaderPattern);
+          if (m) {
+            const prefix = m[1] || "";
+            const rest = (m[3] || "").trim();
+            if (!rest || !rest.includes(sermonSpeakerName)) {
+              lines[i] = `${prefix}MESSAGE: ${sermonSpeakerName}${rest ? " – " + rest : ""}`.trim();
+            }
+            break;
+          }
+        }
+        summaryText = lines.join("\n");
+      }
+
+      setFullSummary(summaryText);
       setShowSummaryModal(true);
     } catch (err) {
       console.error("Error generating summary:", err);
@@ -850,6 +1019,8 @@ function ReviewPageContent() {
         const eventsMatch = /^[#\s]*(upcoming\s+)?events?[:\s]*$/i.test(trimmed);
         const sharingMatch = /^[#\s]*(prayer\s+&\s+)?sharing[:\s]*$/i.test(trimmed);
         const sermonMatch = /^[#\s]*sermon[:\s\-]*/i.test(trimmed);
+        // AI summary often uses "3) MESSAGE" instead of "Sermon" for the sermon section
+        const messageMatch = /^[\d#\s.)\-]*message[:\s\-]*$/i.test(trimmed);
         
         if (announcementsMatch || (trimmed.toUpperCase() === "ANNOUNCEMENTS")) {
           if (currentSection && currentItems.length > 0) {
@@ -875,7 +1046,7 @@ function ReviewPageContent() {
           }
           currentSection = "Sharing";
           currentItems = [];
-        } else if (sermonMatch) {
+        } else if (sermonMatch || messageMatch) {
           if (currentSection && currentItems.length > 0) {
             parsedSections[currentSection as keyof typeof parsedSections].push(...currentItems);
           }
@@ -1453,7 +1624,7 @@ function ReviewPageContent() {
               <div className="flex justify-between items-start mb-4">
                 <div className="flex-1">
                   <h2 className="text-xl font-semibold text-gray-900">
-                    {section.label}
+                    {section.label === "Sermon" ? "Message" : section.label}
                   </h2>
                   {/* Segment Time Editing */}
                   <div className="mt-2 flex gap-4 items-center">
@@ -1492,25 +1663,35 @@ function ReviewPageContent() {
                   </div>
                 </div>
                 {section.label === "Sermon" && (
-                  <button
-                    onClick={() => handleDownloadSermonSegment(section)}
-                    className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm"
-                  >
-                    Download Sermon Segment
-                  </button>
+                  <div className="flex gap-2 flex-wrap">
+                    <button
+                      onClick={() => handleDownloadSermonSegment(section)}
+                      className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm"
+                    >
+                      Download Sermon Segment (WAV)
+                    </button>
+                    <button
+                      onClick={() => handleDownloadSermonTranscript(section)}
+                      className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm"
+                    >
+                      Download Sermon Transcript (TXT)
+                    </button>
+                  </div>
                 )}
               </div>
 
-              {/* Speaker Tagging Notice for Sharing/Sermon sections */}
+              {/* Speaker Tagging Notice for Sharing/Message sections */}
               {(section.label === "Sharing" || section.label === "Sermon") && !sectionHasSpeaker(section) && (
                 <div className="mb-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
                   <div className="flex items-start justify-between">
                     <div className="flex-1">
                       <p className="text-sm font-medium text-yellow-800 mb-2">
-                        ⚠️ No speaker was tagged during {section.label.toLowerCase()}
+                        ⚠️ No speaker was tagged during {section.label === "Sermon" ? "the message" : "sharing"}
                       </p>
                       <p className="text-xs text-yellow-700 mb-3">
-                        Would you like to add a speaker from your speaker list? This will tag all transcript chunks in this section.
+                        {section.label === "Sermon"
+                          ? "Add the message speaker so the summary for members shows \"MESSAGE: [Name]\"."
+                          : "Would you like to add a speaker from your speaker list? This will tag all transcript chunks in this section."}
                       </p>
                       {speakers.length > 0 ? (
                         <div className="flex gap-2">
@@ -1548,6 +1729,84 @@ function ReviewPageContent() {
                         </p>
                       )}
                     </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Fix wrong attribution: assign speaker to a time range within this section */}
+              {(section.label === "Sharing" || section.label === "Sermon") && (
+                <div className="mb-4 p-4 bg-gray-50 border border-gray-200 rounded-lg">
+                  <p className="text-sm font-medium text-gray-700 mb-2">Fix wrong attribution</p>
+                  <p className="text-xs text-gray-600 mb-3">
+                    If some speech was attributed to the wrong person, assign a speaker to a time range (recording time in seconds). Section: {formatTime(section.startMs)} – {section.endMs != null ? formatTime(section.endMs) : "end"}.
+                  </p>
+                  <div className="flex flex-wrap items-end gap-3">
+                    <label className="flex flex-col gap-1">
+                      <span className="text-xs text-gray-600">Start (sec)</span>
+                      <input
+                        type="number"
+                        min={0}
+                        value={fixRangeBySection[section.id]?.startSec ?? ""}
+                        onChange={(e) =>
+                          setFixRangeBySection((prev) => ({
+                            ...prev,
+                            [section.id]: { ...(prev[section.id] ?? { startSec: "", endSec: "", speaker: "" }), startSec: e.target.value },
+                          }))
+                        }
+                        placeholder={String(Math.floor(section.startMs / 1000))}
+                        className="w-24 px-2 py-1.5 text-sm border border-gray-300 rounded"
+                      />
+                    </label>
+                    <label className="flex flex-col gap-1">
+                      <span className="text-xs text-gray-600">End (sec)</span>
+                      <input
+                        type="number"
+                        min={0}
+                        value={fixRangeBySection[section.id]?.endSec ?? ""}
+                        onChange={(e) =>
+                          setFixRangeBySection((prev) => ({
+                            ...prev,
+                            [section.id]: { ...(prev[section.id] ?? { startSec: "", endSec: "", speaker: "" }), endSec: e.target.value },
+                          }))
+                        }
+                        placeholder={section.endMs != null ? String(Math.floor(section.endMs / 1000)) : "—"}
+                        className="w-24 px-2 py-1.5 text-sm border border-gray-300 rounded"
+                      />
+                    </label>
+                    <label className="flex flex-col gap-1">
+                      <span className="text-xs text-gray-600">Speaker</span>
+                      <select
+                        value={fixRangeBySection[section.id]?.speaker ?? ""}
+                        onChange={(e) =>
+                          setFixRangeBySection((prev) => ({
+                            ...prev,
+                            [section.id]: { ...(prev[section.id] ?? { startSec: "", endSec: "", speaker: "" }), speaker: e.target.value },
+                          }))
+                        }
+                        className="px-3 py-1.5 text-sm border border-gray-300 rounded"
+                      >
+                        <option value="">Select...</option>
+                        {speakers.map((s) => (
+                          <option key={s.id} value={s.name}>
+                            {s.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <button
+                      onClick={() => {
+                        const r = fixRangeBySection[section.id];
+                        if (r?.startSec != null && r?.endSec != null && r?.speaker) {
+                          handleAssignSpeakerToRange(section.id, r.startSec, r.endSec, r.speaker);
+                        } else {
+                          alert("Enter start time, end time, and select a speaker.");
+                        }
+                      }}
+                      disabled={assigningRange[section.id] || !fixRangeBySection[section.id]?.speaker}
+                      className="px-4 py-1.5 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {assigningRange[section.id] ? "Applying..." : "Assign speaker to range"}
+                    </button>
                   </div>
                 </div>
               )}

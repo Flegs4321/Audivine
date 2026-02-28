@@ -131,6 +131,10 @@ function RecorderPageContent() {
   const [audioInputDevices, setAudioInputDevices] = useState<MediaDeviceInfo[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | undefined>(undefined);
   const [transcriptionMethod, setTranscriptionMethod] = useState<"browser" | "openai">("browser");
+  const [sharingHintDismissed, setSharingHintDismissed] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem("recorder-sharing-hint-dismissed") === "1";
+  });
 
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const startTimeRef = useRef<number | null>(null);
@@ -618,6 +622,24 @@ function RecorderPageContent() {
       setShowMemberDropdown(false);
       setShowSermonSpeakerDropdown(false);
     }
+  };
+
+  const handleEndCurrentSegment = () => {
+    if (state !== "recording" || activeSegment === null || activeSegmentStartMs === null) return;
+    const currentMs = getCurrentElapsedMs();
+    setSegments((prev) => {
+      const next = [
+        ...prev,
+        { type: activeSegment, startMs: activeSegmentStartMs, endMs: currentMs },
+      ];
+      segmentsRef.current = next;
+      return next;
+    });
+    setActiveSegment(null);
+    setActiveSegmentStartMs(null);
+    setShowMemberDropdown(false);
+    setShowSermonSpeakerDropdown(false);
+    setKeepDropdownOpen(false);
   };
 
   const handleMemberSelect = async (memberName: string, keepOpen = false) => {
@@ -1287,7 +1309,7 @@ function RecorderPageContent() {
                 {/* Segment Buttons */}
                 {(state === "recording" || state === "paused") && (
                   <div className="flex flex-col gap-4 items-center w-full">
-                    <div className="flex flex-wrap gap-4 justify-center w-full">
+                    <div className="flex flex-wrap gap-4 justify-center w-full items-center">
                       {(["Announcements", "Sharing", "Sermon"] as const).map((segment) => (
                         <button
                           key={segment}
@@ -1300,11 +1322,22 @@ function RecorderPageContent() {
                               ? "bg-blue-600 text-white shadow-md"
                               : "bg-gray-200 text-gray-700 hover:bg-gray-300"
                           }`}
-                          title={state === "paused" ? "Resume recording to change segments" : `Select ${segment} segment`}
+                          title={state === "paused" ? "Resume recording to change segments" : `Select ${segment === "Sermon" ? "Message" : segment} segment. ${segment === "Sermon" ? "Sharing ends here; tag the message speaker." : ""}`}
                         >
-                          {segment}
+                          {segment === "Sermon" ? "Message" : segment}
                         </button>
                       ))}
+                      {activeSegment !== null && (
+                        <button
+                          type="button"
+                          onClick={handleEndCurrentSegment}
+                          disabled={state === "paused"}
+                          className="px-4 py-3 rounded-lg font-medium border-2 border-orange-500 text-orange-600 hover:bg-orange-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                          title={`End ${activeSegment === "Sermon" ? "Message" : activeSegment} segment now`}
+                        >
+                          End {activeSegment === "Sermon" ? "Message" : activeSegment}
+                        </button>
+                      )}
                     </div>
                     
                     {/* Member Dropdown for Sharing Time */}
@@ -1484,38 +1517,60 @@ function RecorderPageContent() {
                     
                     {/* Quick Tag Button and End Speaker for Sharing Time - Shows when dropdown is closed */}
                     {activeSegment === "Sharing" && !showMemberDropdown && !keepDropdownOpen && (
-                      <div className="flex gap-3 justify-center">
-                        <button
-                          onClick={() => {
-                            setShowMemberDropdown(true);
-                            setMemberSearchQuery("");
-                          }}
-                          className="px-6 py-3 bg-green-600 text-white rounded-lg font-medium hover:bg-green-700 transition-all shadow-md"
-                        >
-                          Tag Speaker
-                        </button>
-                        {currentSpeaker && (
+                      <div className="flex flex-col gap-2 w-full max-w-lg mx-auto">
+                        {!sharingHintDismissed && (
+                          <div className="flex items-start gap-2 p-3 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-800">
+                            <p className="flex-1">
+                              Tap <strong>End Speaker</strong> when someone finishes, then <strong>Tag Speaker</strong> for the next person, to keep names correct.
+                            </p>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSharingHintDismissed(true);
+                                if (typeof window !== "undefined") window.localStorage.setItem("recorder-sharing-hint-dismissed", "1");
+                              }}
+                              className="shrink-0 px-2 py-1 text-blue-600 hover:bg-blue-100 rounded"
+                              aria-label="Dismiss tip"
+                            >
+                              Dismiss
+                            </button>
+                          </div>
+                        )}
+                        <div className="flex gap-3 justify-center flex-wrap">
+                          <button
+                            onClick={() => {
+                              setShowMemberDropdown(true);
+                              setMemberSearchQuery("");
+                            }}
+                            className="px-6 py-3 bg-green-600 text-white rounded-lg font-medium hover:bg-green-700 transition-all shadow-md"
+                          >
+                            Tag Speaker
+                          </button>
                           <button
                             onClick={(e) => {
                               e.preventDefault();
                               e.stopPropagation();
                               handleEndSpeaker();
                             }}
-                            className="px-6 py-3 bg-orange-500 text-white rounded-lg font-medium hover:bg-orange-600 transition-all shadow-md"
-                            title="End current speaker"
+                            disabled={!currentSpeaker}
+                            className="px-6 py-3 bg-orange-500 text-white rounded-lg font-medium hover:bg-orange-600 transition-all shadow-md disabled:opacity-50 disabled:cursor-not-allowed"
+                            title={currentSpeaker ? "End current speaker before the next person (keeps names correct)" : "No speaker active"}
                           >
                             End Speaker
                           </button>
-                        )}
+                        </div>
+                        <p className="text-xs text-center text-gray-500">
+                          {currentSpeaker ? "Tap End Speaker when they finish, then Tag Speaker for the next person." : "Tag who is sharing; tap End Speaker when they finish."}
+                        </p>
                       </div>
                     )}
 
-                    {/* Speaker Dropdown for Sermon - Tagged First, Then All Alphabetically */}
+                    {/* Message Speaker: tag who is preaching so transcript and summary show "MESSAGE: [Name]" */}
                     {activeSegment === "Sermon" && showSermonSpeakerDropdown && (
                       <div className="w-full max-w-md">
                         <div className="bg-white border border-gray-300 rounded-lg shadow-lg p-4">
                           <label className="block text-sm font-medium text-gray-700 mb-2">
-                            Select Speaker:
+                            Select Message Speaker (Sharing ended; tag who is preaching):
                           </label>
                           {loadingMembers ? (
                             <div className="text-center py-4 text-gray-500">Loading speakers...</div>

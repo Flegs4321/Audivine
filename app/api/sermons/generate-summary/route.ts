@@ -70,7 +70,7 @@ export async function POST(request: NextRequest) {
     const openaiModel = userSettings.model;
 
     const body = await request.json();
-    const { recordingId, transcript } = body;
+    const { recordingId, transcript, sermonSpeakerName } = body;
 
     if (!recordingId && !transcript) {
       return NextResponse.json(
@@ -136,17 +136,23 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Optional instruction to include sermon speaker in MESSAGE header
+    const sermonSpeakerInstruction =
+      sermonSpeakerName && typeof sermonSpeakerName === "string" && sermonSpeakerName.trim().length > 0
+        ? `\nImportant: The person who delivered the sermon/message is "${sermonSpeakerName.trim()}". In your summary, use the section header "MESSAGE: ${sermonSpeakerName.trim()}" (e.g. "3) MESSAGE: ${sermonSpeakerName.trim()}") for the sermon section.\n`
+        : "";
+
     // Generate comprehensive summary using OpenAI
     // Use only the custom prompt if provided, otherwise use default
     let prompt: string;
     if (userSettings.prompt && userSettings.prompt.trim().length > 0) {
       // Use only the custom prompt and transcript
-      prompt = `${userSettings.prompt.trim()}\n\nTranscript (with speaker names in format "Speaker Name - text"):\n${fullTranscript.substring(0, 16000)}`;
+      prompt = `${userSettings.prompt.trim()}${sermonSpeakerInstruction}\n\nTranscript (with speaker names in format "Speaker Name - text"):\n${fullTranscript.substring(0, 16000)}`;
     } else {
       // Fallback to default prompt if no custom prompt
       prompt = `You are creating a summary of a church service sermon to send to all church members. 
 
-The transcript includes speaker names in the format "Speaker Name - text" (e.g., "Josh Byler - Pray for my mom"). Use this information to identify who is speaking during different parts of the service (sharing time, sermon, etc.).
+The transcript includes speaker names in the format "Speaker Name - text" (e.g., "Josh Byler - Pray for my mom"). Use this information to identify who is speaking during different parts of the service (sharing time, sermon, etc.).${sermonSpeakerInstruction}
 
 Please create a well-formatted, engaging summary that includes:
 1. A compelling title for the sermon
