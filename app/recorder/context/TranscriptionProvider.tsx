@@ -61,13 +61,24 @@ export function TranscriptionProviderComponent({ children }: { children: React.R
   }, []);
 
   // Register a single stable wrapper with the engine when provider exists.
-  // The wrapper reads chunkCallbackRef.current on each chunk, so the page can set the ref anytime.
+  // Only this wrapper is ever passed to the engine; the page only updates chunkCallbackRef.
+  // The wrapper validates chunk and forwards to the current page callback so live chunks always reach the UI.
   useEffect(() => {
     if (!provider) return;
     const wrapper = (chunk: TranscriptChunk) => {
-      if (chunk == null) return;
+      if (chunk == null || typeof (chunk as { text?: unknown }).text !== "string") {
+        if (process.env.NODE_ENV === "development") {
+          console.warn("[TranscriptionProvider] Dropping invalid chunk (no text):", chunk);
+        }
+        return;
+      }
       const fn = chunkCallbackRef.current;
-      if (typeof fn === "function") fn(chunk);
+      if (typeof fn !== "function") return;
+      try {
+        fn(chunk);
+      } catch (err) {
+        console.error("[TranscriptionProvider] Chunk handler threw; continuing.", err);
+      }
     };
     stableWrapperRef.current = wrapper;
     provider.onTextChunk(wrapper);

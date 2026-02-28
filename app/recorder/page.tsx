@@ -958,6 +958,7 @@ function RecorderPageContent() {
         seenFinalTextsRef.current.add(chunk.text);
         const updated = [
           ...prev.filter(c => {
+            if (!c || typeof c.text !== "string") return false;
             if (c.isFinal) return true;
             const cOriginalText = c.text.replace(/^\[[^\]]+\]:\s*/, '').replace(/^[^-]+\s*-\s*/, '');
             return cOriginalText !== chunk.text;
@@ -988,14 +989,11 @@ function RecorderPageContent() {
     transcription.onTextChunk(forwarder);
   }, [transcription.isAvailable, transcription.onTextChunk]);
 
-  // Re-register callback when transcription becomes active (after start/resume)
-  // This ensures the callback is set up after the recognition object is recreated
+  // Sync our forwarder into the provider's ref when transcription becomes active (after start/resume).
+  // The engine always uses the provider's stable wrapper; we only update the ref it forwards to.
   useEffect(() => {
     if (transcription.isAvailable && transcription.isActive && transcriptionCallbackRef.current) {
-      console.log("[Recorder] Re-registering transcription callback after start/resume");
-      // Re-register callback to ensure it's set up after transcription restarts
       transcription.onTextChunk(transcriptionCallbackRef.current);
-      console.log("[Recorder] Callback re-registered after start/resume");
     }
   }, [transcription.isAvailable, transcription.isActive, transcription.onTextChunk]);
 
@@ -1905,6 +1903,7 @@ function RecorderPageContent() {
                     {(() => {
                       const displayed = transcriptChunks.slice(-MAX_DISPLAYED_TRANSCRIPT_CHUNKS);
                       return displayed.map((chunk, index) => {
+                        if (!chunk || typeof chunk.text !== "string") return null;
                         const isSpeakerTag = chunk.speakerTag === true;
                         const isSermonTag = isSpeakerTag && (chunk.text.includes(" speaking:") || chunk.text.includes(" speaking:]") || chunk.text.includes(" sermon speaker:"));
                         const isSharingTag = isSpeakerTag && (chunk.text.includes(" sharing:") || chunk.text.includes(" sharing:]"));
