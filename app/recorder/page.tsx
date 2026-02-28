@@ -135,6 +135,11 @@ function RecorderPageContent() {
     if (typeof window === "undefined") return false;
     return window.localStorage.getItem("recorder-sharing-hint-dismissed") === "1";
   });
+  const [isSecureContext, setIsSecureContext] = useState(true);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") setIsSecureContext(window.isSecureContext);
+  }, []);
 
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const startTimeRef = useRef<number | null>(null);
@@ -1877,7 +1882,14 @@ function RecorderPageContent() {
                     <strong>Live transcription:</strong> Showing browser transcription for real-time display. More accurate Whisper transcription will replace this after upload.
                   </div>
                 )}
-                {!transcription.isAvailable ? (
+                {!isSecureContext && transcription.isAvailable ? (
+                  <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg text-amber-800 text-sm">
+                    <p className="font-medium mb-1">Live transcript unavailable</p>
+                    <p className="text-xs">
+                      Speech recognition requires a secure connection (HTTPS). Open this site using your https:// URL so the live transcript can work.
+                    </p>
+                  </div>
+                ) : !transcription.isAvailable ? (
                   <div className="text-center text-gray-400 mt-8">
                     <p className="mb-2">Realtime provider not configured</p>
                     <p className="text-xs text-gray-500">

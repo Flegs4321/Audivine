@@ -96,9 +96,10 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
       
       for (let i = startIndex; i < event.results.length; i++) {
         const result = event.results[i];
-        const transcript = result[0].transcript.trim();
-        
-        // Skip empty transcripts
+        if (!result || result.length === 0) continue;
+        const first = result[0];
+        if (!first || first.transcript == null) continue;
+        const transcript = String(first.transcript).trim();
         if (!transcript) continue;
         
         if (result.isFinal) {
