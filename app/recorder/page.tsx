@@ -412,6 +412,7 @@ function RecorderPageContent() {
       setRecentlyTaggedSpeakers([]); // Reset recently tagged speakers
       // Reset seen final texts to prevent duplicates from previous recordings
       seenFinalTextsRef.current.clear();
+      lastChunkTimeRef.current = 0;
       
       // Start browser transcription if available. Delay so the mic stream is active first;
       // starting recognition before the mic is "warm" often yields no results (onend/no-speech).
@@ -902,6 +903,8 @@ function RecorderPageContent() {
   const transcriptionCallbackRef = useRef<((chunk: TranscriptChunk) => void) | null>(null);
   // Ref that holds the latest chunk handler so the forwarder always runs current logic (avoids stale closure)
   const chunkHandlerRef = useRef<(chunk: TranscriptChunk) => void>(() => {});
+  // Track last chunk time for health check - if no chunks for 2 min while recording, force restart
+  const lastChunkTimeRef = useRef<number>(0);
 
   // Build the actual chunk handler and store in ref so it always has latest setTranscriptChunks etc.
   useEffect(() => {
@@ -912,6 +915,7 @@ function RecorderPageContent() {
         console.warn("[Recorder] Ignoring invalid chunk:", chunk);
         return;
       }
+      lastChunkTimeRef.current = Date.now();
       const speaker = currentSpeakerRef.current || undefined;
       // Store raw transcript text; do not prepend speaker name to every phrase (speaker appears once via tag + metadata)
       const chunkWithSpeaker: TranscriptChunk = {
@@ -981,6 +985,35 @@ function RecorderPageContent() {
       transcription.onTextChunk(transcriptionCallbackRef.current);
     }
   }, [transcription.isAvailable, transcription.isActive, transcription.onTextChunk]);
+
+  // Transcription health check: if we're recording and haven't received a chunk in 2 minutes,
+  // the browser's SpeechRecognition likely stopped (onend sometimes doesn't fire). Force restart.
+  const TRANSCRIPT_STALE_MS = 120000; // 2 minutes
+  const HEALTH_CHECK_INTERVAL_MS = 30000; // Check every 30 seconds
+  useEffect(() => {
+    if (state !== "recording" || !transcription.isAvailable || !transcription.isActive) return;
+    const id = setInterval(async () => {
+      const last = lastChunkTimeRef.current;
+      if (last === 0) return; // No chunks yet this session
+      const elapsed = Date.now() - last;
+      if (elapsed > TRANSCRIPT_STALE_MS) {
+        console.warn("[Recorder] No transcript chunks for", Math.round(elapsed / 1000), "s - forcing transcription restart");
+        try {
+          transcription.stop();
+          await new Promise((r) => setTimeout(r, 200));
+          if (transcriptionCallbackRef.current) {
+            transcription.onTextChunk(transcriptionCallbackRef.current);
+          }
+          await transcription.start();
+          lastChunkTimeRef.current = Date.now();
+          console.log("[Recorder] Transcription restarted by health check");
+        } catch (err) {
+          console.error("[Recorder] Health check restart failed:", err);
+        }
+      }
+    }, HEALTH_CHECK_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, [state, transcription]);
 
   // Handle automatic section analysis
   const handleAnalyzeSections = async () => {
@@ -1873,10 +1906,13 @@ function RecorderPageContent() {
                     </p>
                   </div>
                 ) : !transcription.isAvailable ? (
-                  <div className="text-center text-gray-400 mt-8">
-                    <p className="mb-2">Realtime provider not configured</p>
-                    <p className="text-xs text-gray-500">
-                      Browser Speech Recognition is not available in this browser.
+                  <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg text-amber-800 text-sm">
+                    <p className="font-medium mb-1">Live transcript not available</p>
+                    <p className="text-xs mb-2">
+                      Browser Speech Recognition is not supported in this browser. For live transcripts while recording, use <strong>Microsoft Edge</strong> or <strong>Google Chrome</strong> (Chrome 139+ recommended).
+                    </p>
+                    <p className="text-xs text-amber-700">
+                      Alternatively, switch to OpenAI Whisper in Settings for transcription after upload (works in any browser).
                     </p>
                   </div>
                 ) : transcriptChunks.length === 0 && transcription.noSpeechDetected ? (

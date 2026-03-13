@@ -178,28 +178,38 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
         return;
       }
 
-      // On-device (processLocally) requires the language pack to be installed. If not, fall back to cloud.
-      if (errorType === "language-not-supported" || errorType === "language_not_supported") {
-        if (!this.useCloudFallback && this.isRunning) {
-          this.useCloudFallback = true;
-          console.warn("[BrowserSpeechRecognition] On-device language not installed; falling back to cloud recognition.");
-          const SpeechRecognitionClass =
-            window.SpeechRecognition || window.webkitSpeechRecognition;
-          if (this.recognition && SpeechRecognitionClass) {
-            const savedCallback = this.textChunkCallback;
-            this.recognition = new SpeechRecognitionClass();
-            this.textChunkCallback = savedCallback;
-            this.setupRecognition();
-            try {
-              this.recognition.start();
-            } catch (e) {
-              console.error("[BrowserSpeechRecognition] Fallback start failed:", e);
-            }
+      // On-device (processLocally) can fail for various reasons. Fall back to cloud recognition.
+      // This improves Chrome compatibility when on-device has issues (language pack, policy, etc.).
+      const shouldFallbackToCloud =
+        (errorType === "language-not-supported" || errorType === "language_not_supported" ||
+         errorType === "not-allowed" || errorType === "service-not-allowed" ||
+         errorType === "service-unavailable") &&
+        !this.useCloudFallback &&
+        this.isRunning;
+
+      if (shouldFallbackToCloud) {
+        this.useCloudFallback = true;
+        console.warn(
+          "[BrowserSpeechRecognition] On-device failed (",
+          event.error,
+          "); falling back to cloud recognition. Use Chrome or Edge for best support."
+        );
+        const SpeechRecognitionClass =
+          window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (this.recognition && SpeechRecognitionClass) {
+          const savedCallback = this.textChunkCallback;
+          this.recognition = new SpeechRecognitionClass();
+          this.textChunkCallback = savedCallback;
+          this.setupRecognition();
+          try {
+            this.recognition.start();
+          } catch (e) {
+            console.error("[BrowserSpeechRecognition] Cloud fallback start failed:", e);
           }
         }
         return;
       }
-      
+
       if (errorType === "audio-capture" || errorType === "network") {
         console.warn("Speech recognition warning:", event.error, event.message || "");
       } else {
@@ -209,19 +219,35 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
 
     this.recognition.onend = () => {
       console.log(`[BrowserSpeechRecognition] onend fired, isRunning: ${this.isRunning}, callback present: ${!!this.textChunkCallback}`);
-      // Auto-restart if we're still supposed to be running. Delay slightly so the browser
-      // can clean up; some implementations misbehave if we call start() synchronously in onend.
-      if (this.isRunning && this.recognition && this.textChunkCallback) {
-        const rec = this.recognition;
-        setTimeout(() => {
-          if (!this.isRunning || !this.textChunkCallback) return;
-          try {
-            console.log("[BrowserSpeechRecognition] Auto-restarting recognition after onend");
-            rec.start();
-          } catch (error) {
-            console.log("[BrowserSpeechRecognition] Auto-restart failed (might already be started):", error);
-          }
-        }, 200);
+      // Auto-restart if we're still supposed to be running. Create a FRESH instance instead of
+      // restarting the old one - Chrome/Edge can leave the recognition in a bad state after
+      // no-speech or timeout, and rec.start() on the old object often fails.
+      if (this.isRunning && this.textChunkCallback) {
+        const SpeechRecognitionClass =
+          window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SpeechRecognitionClass) return;
+
+        const doRestart = (attempt: number, maxAttempts: number = 3) => {
+          const delay = 300 + attempt * 200; // 300ms, 500ms, 700ms
+          setTimeout(() => {
+            if (!this.isRunning || !this.textChunkCallback) return;
+            try {
+              // Create fresh instance - old one may be in invalid state
+              const savedCallback = this.textChunkCallback;
+              this.recognition = new SpeechRecognitionClass();
+              this.textChunkCallback = savedCallback;
+              this.setupRecognition();
+              this.recognition!.start();
+              console.log(`[BrowserSpeechRecognition] Auto-restarted with fresh instance (attempt ${attempt + 1})`);
+            } catch (error) {
+              console.warn(`[BrowserSpeechRecognition] Auto-restart failed (attempt ${attempt + 1}/${maxAttempts}):`, error);
+              if (attempt + 1 < maxAttempts) {
+                doRestart(attempt + 1, maxAttempts);
+              }
+            }
+          }, delay);
+        };
+        doRestart(0);
       } else {
         if (!this.isRunning) {
           console.log("[BrowserSpeechRecognition] Not auto-restarting - isRunning is false");
