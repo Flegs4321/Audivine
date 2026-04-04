@@ -414,9 +414,6 @@ function RecorderPageContent() {
         handleEndRecording();
       };
 
-      // Start recording
-      mediaRecorder.start(); // Mp3MediaRecorder doesn't support timeslice - dataavailable fires only when stopped
-
       setState("recording");
       setElapsedTime(0);
       setTranscriptChunks([]);
@@ -427,33 +424,32 @@ function RecorderPageContent() {
       setUploadedUrl(null);
       setUploadError(null);
       startTimeRef.current = Date.now();
-      // Reset refs
       segmentsRef.current = [];
       transcriptChunksRef.current = [];
       elapsedTimeRef.current = 0;
-      setCurrentSpeaker(null); // Reset current speaker
-      currentSpeakerRef.current = null; // Reset ref
-      setRecentlyTaggedSpeakers([]); // Reset recently tagged speakers
-      // Reset seen final texts to prevent duplicates from previous recordings
+      setCurrentSpeaker(null);
+      currentSpeakerRef.current = null;
+      setRecentlyTaggedSpeakers([]);
       seenFinalTextsRef.current.clear();
       lastChunkTimeRef.current = 0;
-      
-      // Start browser transcription if available. Delay so the mic stream is active first;
-      // starting recognition before the mic is "warm" often yields no results (onend/no-speech).
+
+      // Start Web Speech BEFORE MediaRecorder.start(). Many environments starve or block speech
+      // recognition if capture has already started; delayed start also loses user-activation timing.
       if (transcription.isAvailable) {
-        const startTranscription = async () => {
-          try {
-            if (transcriptionCallbackRef.current) {
-              transcription.onTextChunk(transcriptionCallbackRef.current);
-            }
-            await new Promise((r) => setTimeout(r, 750)); // Let mic stream stabilize before Web Speech
-            await transcription.start();
-          } catch (err) {
-            console.error("[Recorder] Failed to start transcription:", err);
+        try {
+          if (transcriptionCallbackRef.current) {
+            transcription.onTextChunk(transcriptionCallbackRef.current);
           }
-        };
-        void startTranscription();
+          await transcription.start();
+        } catch (err) {
+          console.error("[Recorder] Failed to start live transcription:", err);
+          setError(
+            "Live captions failed to start (recording still works). Use Chrome or Edge on HTTPS, or set OpenAI transcription in Settings for text after upload."
+          );
+        }
       }
+
+      mediaRecorder.start();
     } catch (err) {
       console.error("Error starting recording:", err);
       setError(err instanceof Error ? err.message : "Failed to start recording");
@@ -554,42 +550,25 @@ function RecorderPageContent() {
         pauseStartTimeRef.current = null;
       }
 
-      // Resume MediaRecorder if supported
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state === "paused") {
-        // Check if resume is supported
-        if (typeof mediaRecorderRef.current.resume === "function") {
-          mediaRecorderRef.current.resume();
-        } else {
-          console.warn("MediaRecorder resume is not supported in this browser");
-        }
-      }
-
-      // Restart browser transcription if available and user hasn't selected OpenAI
-      // Wait a moment to ensure previous stop is complete
-      await new Promise(resolve => setTimeout(resolve, 150));
-      
-      // Always use browser transcription for live display
-      // If OpenAI is selected, Whisper will replace it after upload for better accuracy
       if (transcription.isAvailable && !transcription.isActive) {
         try {
-          // CRITICAL: Register callback BEFORE restarting transcription
           if (transcriptionCallbackRef.current) {
-            console.log("[Recorder] Registering callback before restarting transcription...");
             transcription.onTextChunk(transcriptionCallbackRef.current);
           }
-          
-          console.log("[Recorder] Restarting browser transcription for live display...");
           await transcription.start();
-          console.log("[Recorder] Browser transcription restarted successfully");
-          
-          // CRITICAL: Re-register callback AFTER restarting transcription
           if (transcriptionCallbackRef.current) {
-            console.log("[Recorder] Re-registering callback after restarting transcription...");
             transcription.onTextChunk(transcriptionCallbackRef.current);
           }
         } catch (err) {
           console.error("[Recorder] Failed to restart transcription:", err);
-          // Continue recording even if transcription fails
+        }
+      }
+
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state === "paused") {
+        if (typeof mediaRecorderRef.current.resume === "function") {
+          mediaRecorderRef.current.resume();
+        } else {
+          console.warn("MediaRecorder resume is not supported in this browser");
         }
       }
 
@@ -1090,6 +1069,15 @@ function RecorderPageContent() {
       const currentTranscriptionMethod = transcriptionMethod || "browser";
       console.log("[Upload] Using transcription method:", currentTranscriptionMethod);
 
+      const hasMeaningfulBrowserTranscript = finalTranscriptChunks.some(
+        (c) =>
+          !c.speakerTag &&
+          typeof c.text === "string" &&
+          c.text.trim().length > 0
+      );
+      const shouldRunWhisperAfterUpload =
+        currentTranscriptionMethod === "openai" || !hasMeaningfulBrowserTranscript;
+
       const metadata = {
         filename: "recording",
         duration: finalElapsedTime,
@@ -1118,13 +1106,19 @@ function RecorderPageContent() {
         setUploadedUrl(result.url);
         console.log("[Recorder] Upload successful, recording ID:", result.recordingId);
         
-        // If using OpenAI transcription, transcribe the audio now
-        if (currentTranscriptionMethod === "openai") {
+        // OpenAI setting: always Whisper. Browser setting: Whisper only if live captions produced no text
+        // (avoids "edit recording" showing only a speaker tag when Web Speech never ran).
+        if (shouldRunWhisperAfterUpload) {
           try {
             const { supabase } = await import("@/lib/supabase/client");
             const { data: { session } } = await supabase.auth.getSession();
             
             if (session?.access_token) {
+              if (currentTranscriptionMethod === "browser" && !hasMeaningfulBrowserTranscript) {
+                console.log(
+                  "[Upload] No live browser transcript; attempting Whisper so the saved recording has full text"
+                );
+              }
               console.log("[Upload] Starting OpenAI Whisper transcription for recording:", result.recordingId);
               const transcribeResponse = await fetch("/api/sermons/transcribe", {
                 method: "POST",
@@ -1160,19 +1154,22 @@ function RecorderPageContent() {
                 }
               } else {
                 const errorText = await transcribeResponse.text();
-                console.error("[Upload] OpenAI Whisper transcription failed:", transcribeResponse.status, errorText);
-                setError(`Whisper transcription failed: ${errorText}`);
+                console.error("[Upload] Whisper transcription failed:", transcribeResponse.status, errorText);
+                if (currentTranscriptionMethod === "openai") {
+                  setError(`Whisper transcription failed: ${errorText}`);
+                }
               }
             } else {
               console.error("[Upload] No session token available for Whisper transcription");
             }
           } catch (err) {
             console.error("[Upload] Error during OpenAI Whisper transcription:", err);
-            setError(`Whisper transcription error: ${err instanceof Error ? err.message : "Unknown error"}`);
-            // Don't fail the upload if transcription fails
+            if (currentTranscriptionMethod === "openai") {
+              setError(`Whisper transcription error: ${err instanceof Error ? err.message : "Unknown error"}`);
+            }
           }
         } else {
-          console.log("[Upload] Using browser transcription, skipping Whisper");
+          console.log("[Upload] Using browser transcription only (live text present), skipping Whisper");
         }
         
         // Refresh sermons list after successful upload

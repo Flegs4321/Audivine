@@ -8,7 +8,8 @@ const nextConfig = {
         headers: [
           {
             key: "Permissions-Policy",
-            value: "microphone=(self), on-device-speech-recognition=(self)",
+            // Cloud Web Speech needs microphone; avoid extra directives that can confuse policy checks.
+            value: "microphone=(self)",
           },
         ],
       },
