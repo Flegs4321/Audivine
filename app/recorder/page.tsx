@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
+import { flushSync } from "react-dom";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { TranscriptionProviderComponent, useTranscription } from "./context/TranscriptionProvider";
@@ -462,7 +463,7 @@ function RecorderPageContent() {
       if (transcription.isActive) {
         transcription.stop();
         // Let the speech engine flush pending results to onresult before we snapshot
-        await new Promise((resolve) => setTimeout(resolve, 450));
+        await new Promise((resolve) => setTimeout(resolve, 650));
       }
 
       // Close active segment if any
@@ -904,43 +905,52 @@ function RecorderPageContent() {
         speaker: speaker,
       };
 
-      setTranscriptChunks((prev) => {
-        if (chunk.speakerTag === true) {
-          const updated = [...prev, chunk];
+      // Web Speech fires outside React events; without flushSync, Chrome can batch many
+      // onresult callbacks and the UI may not paint until recording stops.
+      flushSync(() => {
+        setTranscriptChunks((prev) => {
+          if (chunk.speakerTag === true) {
+            const updated = [...prev, chunk];
+            transcriptChunksRef.current = updated;
+            currentSpeakerRef.current = chunk.speaker || null;
+            setCurrentSpeaker(chunk.speaker || null);
+            return updated;
+          }
+          if (!chunkWithSpeaker.isFinal) {
+            let next: TranscriptChunk[];
+            if (prev.length > 0 && !prev[prev.length - 1].isFinal) {
+              next = [...prev.slice(0, -1), chunkWithSpeaker];
+            } else if (!seenFinalTextsRef.current.has(chunk.text)) {
+              next = [...prev, chunkWithSpeaker];
+            } else {
+              return prev;
+            }
+            transcriptChunksRef.current = next;
+            return next;
+          }
+          if (seenFinalTextsRef.current.has(chunk.text)) {
+            return prev;
+          }
+          seenFinalTextsRef.current.add(chunk.text);
+          const updated = [
+            ...prev.filter((c) => {
+              if (!c || typeof c.text !== "string") return false;
+              if (c.isFinal) return true;
+              const cOriginalText = c.text
+                .replace(/^\[[^\]]+\]:\s*/, "")
+                .replace(/^[^-]+\s*-\s*/, "");
+              return cOriginalText !== chunk.text;
+            }),
+            chunkWithSpeaker,
+          ];
           transcriptChunksRef.current = updated;
-          currentSpeakerRef.current = chunk.speaker || null;
-          setCurrentSpeaker(chunk.speaker || null);
+          if (updated.length > 500) {
+            const trimmed = updated.slice(-500);
+            transcriptChunksRef.current = trimmed;
+            return trimmed;
+          }
           return updated;
-        }
-        if (!chunkWithSpeaker.isFinal) {
-          if (prev.length > 0 && !prev[prev.length - 1].isFinal) {
-            return [...prev.slice(0, -1), chunkWithSpeaker];
-          }
-          if (!seenFinalTextsRef.current.has(chunk.text)) {
-            return [...prev, chunkWithSpeaker];
-          }
-          return prev;
-        }
-        if (seenFinalTextsRef.current.has(chunk.text)) {
-          return prev;
-        }
-        seenFinalTextsRef.current.add(chunk.text);
-        const updated = [
-          ...prev.filter(c => {
-            if (!c || typeof c.text !== "string") return false;
-            if (c.isFinal) return true;
-            const cOriginalText = c.text.replace(/^\[[^\]]+\]:\s*/, '').replace(/^[^-]+\s*-\s*/, '');
-            return cOriginalText !== chunk.text;
-          }),
-          chunkWithSpeaker
-        ];
-        transcriptChunksRef.current = updated;
-        if (updated.length > 500) {
-          const trimmed = updated.slice(-500);
-          transcriptChunksRef.current = trimmed;
-          return trimmed;
-        }
-        return updated;
+        });
       });
 
       setTimeout(() => {
