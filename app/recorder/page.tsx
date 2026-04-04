@@ -5,6 +5,10 @@ import { flushSync } from "react-dom";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { TranscriptionProviderComponent, useTranscription } from "./context/TranscriptionProvider";
+import {
+  AUDIVINE_SPEECH_DEBUG_EVENT,
+  type AudivineSpeechDebugDetail,
+} from "./providers/BrowserSpeechRecognitionProvider";
 import type { TranscriptChunk } from "./types/transcription";
 import { uploadRecording } from "@/lib/supabase/storage";
 import { useAuth } from "../auth/context/AuthProvider";
@@ -137,10 +141,39 @@ function RecorderPageContent() {
     return window.localStorage.getItem("recorder-sharing-hint-dismissed") === "1";
   });
   const [isSecureContext, setIsSecureContext] = useState(true);
+  /** Shown under Live Transcript when the speech engine reports errors (network, no-speech, etc.) */
+  const [liveSpeechHint, setLiveSpeechHint] = useState<string | null>(null);
 
   useEffect(() => {
     if (typeof window !== "undefined") setIsSecureContext(window.isSecureContext);
   }, []);
+
+  useEffect(() => {
+    const onDebug = (ev: Event) => {
+      const d = (ev as CustomEvent<AudivineSpeechDebugDetail>).detail;
+      if (!d) return;
+      if (d.kind === "first-result") {
+        setLiveSpeechHint(null);
+        return;
+      }
+      if (d.kind === "started") return;
+      if (d.kind === "info") {
+        setLiveSpeechHint(d.message || d.code || "Speech info");
+        return;
+      }
+      if (d.kind === "error") {
+        setLiveSpeechHint(
+          [d.code, d.message].filter(Boolean).join(": ") || "Speech recognition error"
+        );
+      }
+    };
+    window.addEventListener(AUDIVINE_SPEECH_DEBUG_EVENT, onDebug);
+    return () => window.removeEventListener(AUDIVINE_SPEECH_DEBUG_EVENT, onDebug);
+  }, []);
+
+  useEffect(() => {
+    if (state === "idle") setLiveSpeechHint(null);
+  }, [state]);
 
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const startTimeRef = useRef<number | null>(null);
@@ -433,24 +466,24 @@ function RecorderPageContent() {
       setRecentlyTaggedSpeakers([]);
       seenFinalTextsRef.current.clear();
       lastChunkTimeRef.current = 0;
+      setLiveSpeechHint(null);
 
-      // Start Web Speech BEFORE MediaRecorder.start(). Many environments starve or block speech
-      // recognition if capture has already started; delayed start also loses user-activation timing.
-      if (transcription.isAvailable) {
-        try {
-          if (transcriptionCallbackRef.current) {
-            transcription.onTextChunk(transcriptionCallbackRef.current);
-          }
-          await transcription.start();
-        } catch (err) {
-          console.error("[Recorder] Failed to start live transcription:", err);
-          setError(
-            "Live captions failed to start (recording still works). Use Chrome or Edge on HTTPS, or set OpenAI transcription in Settings for text after upload."
-          );
-        }
-      }
-
+      // Start capture first; defer speech to next microtask so both can attach to the mic on finicky drivers.
       mediaRecorder.start();
+
+      if (transcription.isAvailable) {
+        if (transcriptionCallbackRef.current) {
+          transcription.onTextChunk(transcriptionCallbackRef.current);
+        }
+        queueMicrotask(() => {
+          void transcription.start().catch((err) => {
+            console.error("[Recorder] Failed to start live transcription:", err);
+            setError(
+              "Live captions failed to start (recording still works). Click “Restart live captions”, or use OpenAI in Settings for text after upload."
+            );
+          });
+        });
+      }
     } catch (err) {
       console.error("Error starting recording:", err);
       setError(err instanceof Error ? err.message : "Failed to start recording");
@@ -1909,6 +1942,41 @@ function RecorderPageContent() {
                       : "OpenAI Whisper API"}
                   </span>
                 </div>
+                {(state === "recording" || state === "paused") && transcription.isAvailable && (
+                  <div className="mt-3 space-y-2">
+                    {liveSpeechHint && (
+                      <div className="text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded p-2">
+                        <span className="font-semibold">Speech: </span>
+                        {liveSpeechHint}
+                      </div>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => void restartLiveTranscription("button: Restart live captions")}
+                      className="text-xs font-medium text-blue-700 hover:text-blue-900 underline"
+                    >
+                      Restart live captions
+                    </button>
+                    <p className="text-[11px] text-gray-500">
+                      Uses this click to re-bind speech (helps when Chrome/Edge block background starts).
+                    </p>
+                    <details className="text-[11px] text-gray-600">
+                      <summary className="cursor-pointer font-medium text-gray-700">
+                        If nothing appears live (Chrome &amp; Edge both use the same engine)
+                      </summary>
+                      <ul className="list-disc pl-4 mt-1 space-y-1">
+                        <li>Open DevTools (F12) → Console, filter: BrowserSpeechRecognition</li>
+                        <li>Try a phone hotspot — school/work Wi‑Fi often blocks Google speech</li>
+                        <li>Turn off VPN and disable ad-blockers for this site</li>
+                        <li>Windows: Settings → Privacy → Microphone → allow your browser</li>
+                        <li>
+                          Settings → transcription: choose <strong>OpenAI</strong> for a full transcript after
+                          upload without depending on live browser speech
+                        </li>
+                      </ul>
+                    </details>
+                  </div>
+                )}
               </div>
               <div className="h-[600px] overflow-y-auto border border-gray-200 rounded-lg p-4 bg-gray-50">
                 {transcriptionMethod === "openai" && transcriptChunks.length > 0 && (

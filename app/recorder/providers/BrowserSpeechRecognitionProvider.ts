@@ -53,6 +53,15 @@ declare global {
   }
 }
 
+/** Recorder page listens for diagnostics (network / not-allowed / first result). */
+export const AUDIVINE_SPEECH_DEBUG_EVENT = "audivine-speech-debug";
+
+export type AudivineSpeechDebugDetail = {
+  kind: "started" | "first-result" | "info" | "error";
+  code?: string;
+  message?: string;
+};
+
 export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
   private recognition: SpeechRecognition | null = null;
   private textChunkCallback: ((chunk: TranscriptChunk) => void) | null = null;
@@ -64,6 +73,16 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
   private onNoSpeechCallback: (() => void) | null = null;
   /** When true, skip processLocally (on-device requires language pack; fall back to cloud) */
   private useCloudFallback: boolean = false;
+  private sawFirstChunkEmitted: boolean = false;
+
+  private emitDebug(detail: AudivineSpeechDebugDetail): void {
+    if (typeof window === "undefined") return;
+    try {
+      window.dispatchEvent(new CustomEvent(AUDIVINE_SPEECH_DEBUG_EVENT, { detail }));
+    } catch {
+      /* ignore */
+    }
+  }
 
   /** New SpeechRecognition instances reset result indices; keep bookkeeping in sync. */
   private resetStateForNewRecognitionInstance(): void {
@@ -142,6 +161,10 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
           // Send final result immediately
           const currentMs = Date.now() - this.startTimeMs;
           console.log(`[BrowserSpeechRecognition] Sending final chunk: "${transcript.substring(0, 50)}..." at ${currentMs}ms`);
+          if (!this.sawFirstChunkEmitted) {
+            this.sawFirstChunkEmitted = true;
+            this.emitDebug({ kind: "first-result" });
+          }
           this.textChunkCallback({
             text: transcript,
             timestampMs: currentMs,
@@ -159,6 +182,10 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
           if (i === event.results.length - 1 && !this.sentFinalTexts.has(transcript)) {
             const currentMs = Date.now() - this.startTimeMs;
             console.log(`[BrowserSpeechRecognition] Sending interim chunk: "${transcript.substring(0, 50)}..." at ${currentMs}ms`);
+            if (!this.sawFirstChunkEmitted) {
+              this.sawFirstChunkEmitted = true;
+              this.emitDebug({ kind: "first-result" });
+            }
             this.textChunkCallback({
               text: transcript,
               timestampMs: currentMs,
@@ -175,7 +202,15 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
       // "no-speech" is a common, non-critical error that occurs when no speech is detected
       if (errorType === "no-speech" || errorType === "no_speech") {
         this.noSpeechCount++;
-        if (this.noSpeechCount === 1) this.onNoSpeechCallback?.();
+        if (this.noSpeechCount === 1) {
+          this.onNoSpeechCallback?.();
+          this.emitDebug({
+            kind: "info",
+            code: "no-speech",
+            message:
+              "No speech detected yet (common at startup). Speak steadily; if this never clears, the speech service may not be getting audio.",
+          });
+        }
         if (this.noSpeechCount === 1 || this.noSpeechCount % 3 === 0) {
           console.warn(
             "[BrowserSpeechRecognition] No speech detected (count:",
@@ -201,6 +236,11 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
 
       if (shouldFallbackToCloud) {
         this.useCloudFallback = true;
+        this.emitDebug({
+          kind: "error",
+          code: event.error,
+          message: event.message || "On-device speech failed; retrying with cloud recognition.",
+        });
         console.warn(
           "[BrowserSpeechRecognition] On-device failed (",
           event.error,
@@ -225,8 +265,22 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
 
       if (errorType === "audio-capture" || errorType === "network") {
         console.warn("Speech recognition warning:", event.error, event.message || "");
+        this.emitDebug({
+          kind: "error",
+          code: event.error,
+          message:
+            event.message ||
+            (errorType === "network"
+              ? "Network error: VPN, firewall, school/work filter, or ad-blocker may block Google’s speech service."
+              : "Audio-capture: mic may be in use exclusively by another app or driver."),
+        });
       } else {
         console.error("Speech recognition error:", event.error, event.message || "");
+        this.emitDebug({
+          kind: "error",
+          code: event.error,
+          message: event.message || undefined,
+        });
       }
     };
 
@@ -304,11 +358,13 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
 
     this.startTimeMs = Date.now();
     this.resetStateForNewRecognitionInstance();
+    this.sawFirstChunkEmitted = false;
     this.noSpeechCount = 0;
     this.isRunning = true;
 
     try {
       this.recognition.start();
+      this.emitDebug({ kind: "started" });
       console.log("[BrowserSpeechRecognition] Recognition started successfully");
     } catch (error) {
       this.isRunning = false; // Reset flag if start fails
