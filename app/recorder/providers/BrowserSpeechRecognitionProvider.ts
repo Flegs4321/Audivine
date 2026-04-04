@@ -1,4 +1,7 @@
-import type { TranscriptionProvider, TranscriptChunk } from "../types/transcription";
+import type {
+  TranscriptionProvider,
+  LiveRecognitionChunk,
+} from "../types/transcription";
 
 // Type definitions for Web Speech API
 interface SpeechRecognition extends EventTarget {
@@ -55,12 +58,10 @@ declare global {
 
 export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
   private recognition: SpeechRecognition | null = null;
-  private textChunkCallback: ((chunk: TranscriptChunk) => void) | null = null;
-  private startTimeMs: number = 0;
-  private lastProcessedIndex: number = 0; // Track the last result index we've processed
-  private sentFinalTexts: Set<string> = new Set(); // Track final texts we've already sent
-  private isRunning: boolean = false; // Track if we're supposed to be running
-  private noSpeechCount: number = 0; // For logging no-speech (browser often ends without results)
+  private textChunkCallback: ((chunk: LiveRecognitionChunk) => void) | null = null;
+  private lastProcessedIndex: number = 0;
+  private isRunning: boolean = false;
+  private noSpeechCount: number = 0;
   private onNoSpeechCallback: (() => void) | null = null;
   /** When true, skip processLocally (on-device requires language pack; fall back to cloud) */
   private useCloudFallback: boolean = false;
@@ -75,21 +76,26 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
     }
   }
 
-  /** Optional: called when the browser reports "no speech" so the UI can show a hint */
   setOnNoSpeech(callback: (() => void) | null): void {
     this.onNoSpeechCallback = callback;
   }
 
   /**
    * Each new `SpeechRecognition` instance starts a fresh result stream (indices from 0).
-   * If we replace the engine while keeping the same recording session, we must reset
-   * bookkeeping or `lastProcessedIndex` stays high and we skip every result until the
-   * new session's cumulative length catches up — looks like "dead" live transcript until
-   * pause/resume calls `start()` which resets state.
+   * Reset index bookkeeping when swapping instances mid-session.
    */
   private resetStateForNewRecognitionInstance(): void {
     this.lastProcessedIndex = 0;
-    this.sentFinalTexts.clear();
+  }
+
+  private emitChunk(chunk: LiveRecognitionChunk): void {
+    if (!this.textChunkCallback) return;
+    console.log("[BrowserSpeechRecognition] chunk emitted", {
+      textPreview: chunk.text.slice(0, 80),
+      textLength: chunk.text.length,
+      isFinal: chunk.isFinal,
+    });
+    this.textChunkCallback(chunk);
   }
 
   private setupRecognition() {
@@ -98,10 +104,6 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
     this.recognition.continuous = true;
     this.recognition.interimResults = true;
     this.recognition.lang = "en-US";
-    // Do not force on-device recognition by default. Chrome/Edge expose `processLocally`, but
-    // setting it true often yields no `onresult` events if the language pack isn't installed
-    // (looks like "live transcript never works"). Network recognition is the reliable default.
-    // Opt in with NEXT_PUBLIC_SPEECH_ON_DEVICE=true when you explicitly want on-device only.
     const preferOnDevice =
       typeof process !== "undefined" &&
       process.env.NEXT_PUBLIC_SPEECH_ON_DEVICE === "true";
@@ -119,17 +121,8 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
         return;
       }
 
-      console.log(`[BrowserSpeechRecognition] onresult fired: resultIndex=${event.resultIndex}, results.length=${event.results.length}`);
-
-      // The Web Speech API sends cumulative results - each event contains ALL results from the start
-      // We need to process only NEW results (from resultIndex onwards) and track what we've sent
-      
-      // Process only results starting from resultIndex (where new results begin)
-      // But also ensure we don't process anything before lastProcessedIndex
       const startIndex = Math.max(event.resultIndex, this.lastProcessedIndex);
-      
-      console.log(`[BrowserSpeechRecognition] Processing results from index ${startIndex} to ${event.results.length - 1}`);
-      
+
       for (let i = startIndex; i < event.results.length; i++) {
         const result = event.results[i];
         if (!result || result.length === 0) continue;
@@ -137,41 +130,13 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
         if (!first || first.transcript == null) continue;
         const transcript = String(first.transcript).trim();
         if (!transcript) continue;
-        
+
         if (result.isFinal) {
-          // Check if we've already sent this exact final text
-          if (this.sentFinalTexts.has(transcript)) {
-            // Already sent, skip it
-            console.log(`[BrowserSpeechRecognition] Skipping duplicate final: "${transcript.substring(0, 30)}..."`);
-            this.lastProcessedIndex = i + 1;
-            continue;
-          }
-          
-          // Send final result immediately
-          const currentMs = Date.now() - this.startTimeMs;
-          console.log(`[BrowserSpeechRecognition] Sending final chunk: "${transcript.substring(0, 50)}..." at ${currentMs}ms`);
-          this.textChunkCallback({
-            text: transcript,
-            timestampMs: currentMs,
-            isFinal: true,
-          });
-          
-          // Mark as sent
-          this.sentFinalTexts.add(transcript);
-          // Update last processed index to prevent reprocessing
+          this.emitChunk({ text: transcript, isFinal: true });
           this.lastProcessedIndex = i + 1;
         } else {
-          // For interim results, only send if this is the last result (most recent interim)
-          // This prevents sending multiple interim updates for the same text
-          // Also skip if we've already sent this as a final result
-          if (i === event.results.length - 1 && !this.sentFinalTexts.has(transcript)) {
-            const currentMs = Date.now() - this.startTimeMs;
-            console.log(`[BrowserSpeechRecognition] Sending interim chunk: "${transcript.substring(0, 50)}..." at ${currentMs}ms`);
-            this.textChunkCallback({
-              text: transcript,
-              timestampMs: currentMs,
-              isFinal: false,
-            });
+          if (i === event.results.length - 1) {
+            this.emitChunk({ text: transcript, isFinal: false });
           }
         }
       }
@@ -179,8 +144,7 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
 
     this.recognition.onerror = (event) => {
       const errorType = event.error?.toLowerCase() || "";
-      
-      // "no-speech" is a common, non-critical error that occurs when no speech is detected
+
       if (errorType === "no-speech" || errorType === "no_speech") {
         this.noSpeechCount++;
         if (this.noSpeechCount === 1) this.onNoSpeechCallback?.();
@@ -193,14 +157,11 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
         }
         return;
       }
-      
-      // "aborted" / "interrupted" when recognition is stopped or the tab loses focus briefly
+
       if (errorType === "aborted" || errorType === "interrupted") {
         return;
       }
 
-      // On-device (processLocally) can fail for various reasons. Fall back to cloud recognition.
-      // This improves Chrome compatibility when on-device has issues (language pack, policy, etc.).
       const shouldFallbackToCloud =
         (errorType === "language-not-supported" || errorType === "language_not_supported" ||
          errorType === "not-allowed" || errorType === "service-not-allowed" ||
@@ -225,6 +186,7 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
           this.setupRecognition();
           try {
             this.recognition.start();
+            console.log("[BrowserSpeechRecognition] transcription restart (cloud fallback)");
           } catch (e) {
             console.error("[BrowserSpeechRecognition] Cloud fallback start failed:", e);
           }
@@ -240,30 +202,36 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
     };
 
     this.recognition.onend = () => {
-      console.log(`[BrowserSpeechRecognition] onend fired, isRunning: ${this.isRunning}, callback present: ${!!this.textChunkCallback}`);
-      // Auto-restart if we're still supposed to be running. Create a FRESH instance instead of
-      // restarting the old one - Chrome/Edge can leave the recognition in a bad state after
-      // no-speech or timeout, and rec.start() on the old object often fails.
+      console.log("[BrowserSpeechRecognition] onend", {
+        isRunning: this.isRunning,
+        hasCallback: !!this.textChunkCallback,
+      });
       if (this.isRunning && this.textChunkCallback) {
         const SpeechRecognitionClass =
           window.SpeechRecognition || window.webkitSpeechRecognition;
         if (!SpeechRecognitionClass) return;
 
         const doRestart = (attempt: number, maxAttempts: number = 3) => {
-          const delay = 300 + attempt * 200; // 300ms, 500ms, 700ms
+          const delay = 300 + attempt * 200;
           setTimeout(() => {
             if (!this.isRunning || !this.textChunkCallback) return;
             try {
-              // Create fresh instance - old one may be in invalid state
+              console.log("[BrowserSpeechRecognition] transcription restart (auto)", {
+                attempt: attempt + 1,
+                maxAttempts,
+              });
               const savedCallback = this.textChunkCallback;
               this.recognition = new SpeechRecognitionClass();
               this.textChunkCallback = savedCallback;
               this.resetStateForNewRecognitionInstance();
               this.setupRecognition();
               this.recognition!.start();
-              console.log(`[BrowserSpeechRecognition] Auto-restarted with fresh instance (attempt ${attempt + 1})`);
+              console.log("[BrowserSpeechRecognition] transcription restart (auto) — started");
             } catch (error) {
-              console.warn(`[BrowserSpeechRecognition] Auto-restart failed (attempt ${attempt + 1}/${maxAttempts}):`, error);
+              console.warn(
+                `[BrowserSpeechRecognition] Auto-restart failed (attempt ${attempt + 1}/${maxAttempts}):`,
+                error
+              );
               if (attempt + 1 < maxAttempts) {
                 doRestart(attempt + 1, maxAttempts);
               }
@@ -271,95 +239,68 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
           }, delay);
         };
         doRestart(0);
-      } else {
-        if (!this.isRunning) {
-          console.log("[BrowserSpeechRecognition] Not auto-restarting - isRunning is false");
-        }
-        if (!this.textChunkCallback) {
-          console.warn("[BrowserSpeechRecognition] Not auto-restarting - no callback set!");
-        }
       }
     };
   }
 
   async start(): Promise<void> {
-    // Always recreate the recognition object to ensure clean state after pause/resume
-    // This is necessary because the Web Speech API can get into an invalid state
     const SpeechRecognitionClass =
       window.SpeechRecognition || window.webkitSpeechRecognition;
-    
+
     if (!SpeechRecognitionClass) {
       throw new Error("Speech recognition is not available");
     }
 
     const savedCallback = this.textChunkCallback;
-    this.useCloudFallback = false; // Try on-device first each session
+    this.useCloudFallback = false;
 
-    console.log("[BrowserSpeechRecognition] Starting recognition, callback present:", !!savedCallback);
+    console.log("[BrowserSpeechRecognition] transcription start", {
+      hadCallback: !!savedCallback,
+    });
 
     this.recognition = new SpeechRecognitionClass();
-    
-    // Restore callback BEFORE setupRecognition so it's available in the onresult handler
+
     if (savedCallback) {
       this.textChunkCallback = savedCallback;
-      console.log("[BrowserSpeechRecognition] Callback restored before setup");
     } else {
       console.warn("[BrowserSpeechRecognition] WARNING: No callback set! Transcription will not work!");
     }
-    
-    // Setup recognition with the callback already in place
-    this.setupRecognition();
-    console.log("[BrowserSpeechRecognition] Recognition setup complete, callback present:", !!this.textChunkCallback);
 
-    // Reset state for new recording session
-    this.startTimeMs = Date.now();
+    this.setupRecognition();
+
     this.resetStateForNewRecognitionInstance();
     this.noSpeechCount = 0;
     this.isRunning = true;
 
     try {
       this.recognition.start();
-      console.log("[BrowserSpeechRecognition] Recognition started successfully");
+      console.log("[BrowserSpeechRecognition] transcription start — recognition.start() ok");
     } catch (error) {
-      this.isRunning = false; // Reset flag if start fails
-      // If still fails, throw the error
+      this.isRunning = false;
       if (error instanceof Error) {
-        console.error("[Transcription] Failed to start recognition:", error);
+        console.error("[BrowserSpeechRecognition] transcription start failed:", error);
         throw error;
       }
       throw new Error("Unknown error starting recognition");
     }
   }
 
-  onTextChunk(callback: (chunk: TranscriptChunk) => void): void {
-    console.log("[BrowserSpeechRecognition] onTextChunk called, setting callback");
-    // CRITICAL: Only update callback if it's different or null
-    // Re-setting the same callback while recognition is running can cause issues
+  onTextChunk(callback: (chunk: LiveRecognitionChunk) => void): void {
     if (this.textChunkCallback !== callback) {
       this.textChunkCallback = callback;
-      console.log("[BrowserSpeechRecognition] Callback updated");
-    } else {
-      console.log("[BrowserSpeechRecognition] Callback unchanged, skipping update to avoid interrupting recognition");
-    }
-    // If recognition is already set up, we need to ensure the callback is available
-    // The onresult handler will use this.textChunkCallback
-    if (this.recognition) {
-      console.log("[BrowserSpeechRecognition] Callback set, recognition object exists and is", this.isRunning ? "running" : "stopped");
     }
   }
 
   stop(): void {
-    this.isRunning = false; // Mark that we're no longer running
+    console.log("[BrowserSpeechRecognition] transcription stop");
+    this.isRunning = false;
     if (this.recognition) {
       try {
         this.recognition.stop();
       } catch (error) {
-        // Ignore errors when stopping
-        console.warn("Error stopping recognition:", error);
+        console.warn("[BrowserSpeechRecognition] transcription stop error:", error);
       }
     }
-    // Don't clear the callback - we might restart soon
-    // this.textChunkCallback = null;
   }
 
   isAvailable(): boolean {
@@ -372,4 +313,3 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
     return "Browser Speech Recognition";
   }
 }
-

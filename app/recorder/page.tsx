@@ -1,10 +1,10 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { TranscriptionProviderComponent, useTranscription } from "./context/TranscriptionProvider";
-import type { TranscriptChunk } from "./types/transcription";
+import type { TranscriptChunk, LiveRecognitionChunk } from "./types/transcription";
 import { uploadRecording } from "@/lib/supabase/storage";
 import { useAuth } from "../auth/context/AuthProvider";
 import Header from "../components/Header";
@@ -20,6 +20,8 @@ interface Segment {
 
 // Maximum number of transcript chunks to display (keep most recent)
 const MAX_DISPLAYED_TRANSCRIPT_CHUNKS = 100;
+/** Wall-clock window to drop duplicate finals (e.g. recognition restart replaying the same line). */
+const LIVE_FINAL_DEDUPE_WINDOW_MS = 4000;
 
 function RecorderPageContent() {
   const router = useRouter();
@@ -209,13 +211,14 @@ function RecorderPageContent() {
     return formatTime(totalSeconds);
   };
 
-  const getCurrentElapsedMs = (): number => {
+  const getCurrentElapsedMs = useCallback((): number => {
     if (startTimeRef.current === null) return 0;
-    const now = state === "paused" && pauseStartTimeRef.current !== null
-      ? pauseStartTimeRef.current
-      : Date.now();
+    const now =
+      state === "paused" && pauseStartTimeRef.current !== null
+        ? pauseStartTimeRef.current
+        : Date.now();
     return now - startTimeRef.current - pausedTimeRef.current;
-  };
+  }, [state]);
 
   // Enumerate available audio input devices
   const enumerateAudioDevices = async (forcePermission = false) => {
@@ -410,8 +413,7 @@ function RecorderPageContent() {
       setCurrentSpeaker(null); // Reset current speaker
       currentSpeakerRef.current = null; // Reset ref
       setRecentlyTaggedSpeakers([]); // Reset recently tagged speakers
-      // Reset seen final texts to prevent duplicates from previous recordings
-      seenFinalTextsRef.current.clear();
+      recentFinalDedupeRef.current = [];
       lastChunkTimeRef.current = 0;
       
       // Start browser transcription if available. Delay so the mic stream is active first;
@@ -419,13 +421,15 @@ function RecorderPageContent() {
       if (transcription.isAvailable) {
         const startTranscription = async () => {
           try {
+            console.log("[Recorder][Transcription] start requested (with recording)");
             if (transcriptionCallbackRef.current) {
               transcription.onTextChunk(transcriptionCallbackRef.current);
             }
             await new Promise((r) => setTimeout(r, 500)); // Let mic stream stabilize
             await transcription.start();
+            console.log("[Recorder][Transcription] start completed (with recording)");
           } catch (err) {
-            console.error("[Recorder] Failed to start transcription:", err);
+            console.error("[Recorder][Transcription] start failed:", err);
           }
         };
         void startTranscription();
@@ -439,11 +443,11 @@ function RecorderPageContent() {
 
   const handleEndRecording = async () => {
     try {
-      // Stop transcription
       if (transcription.isActive) {
+        console.log("[Recorder][Transcription] stop requested (end recording)");
         transcription.stop();
-        // Give it a moment to fully stop before ending
         await new Promise(resolve => setTimeout(resolve, 100));
+        console.log("[Recorder][Transcription] stop completed (end recording)");
       }
 
       // Close active segment if any
@@ -507,9 +511,10 @@ function RecorderPageContent() {
         }
       }
 
-      // Stop transcription (will restart on resume)
       if (transcription.isActive) {
+        console.log("[Recorder][Transcription] stop requested (pause)");
         transcription.stop();
+        console.log("[Recorder][Transcription] stop completed (pause)");
       }
 
       // Record pause start time
@@ -548,24 +553,17 @@ function RecorderPageContent() {
       // If OpenAI is selected, Whisper will replace it after upload for better accuracy
       if (transcription.isAvailable && !transcription.isActive) {
         try {
-          // CRITICAL: Register callback BEFORE restarting transcription
+          console.log("[Recorder][Transcription] start requested (resume)");
           if (transcriptionCallbackRef.current) {
-            console.log("[Recorder] Registering callback before restarting transcription...");
             transcription.onTextChunk(transcriptionCallbackRef.current);
           }
-          
-          console.log("[Recorder] Restarting browser transcription for live display...");
           await transcription.start();
-          console.log("[Recorder] Browser transcription restarted successfully");
-          
-          // CRITICAL: Re-register callback AFTER restarting transcription
+          console.log("[Recorder][Transcription] start completed (resume)");
           if (transcriptionCallbackRef.current) {
-            console.log("[Recorder] Re-registering callback after restarting transcription...");
             transcription.onTextChunk(transcriptionCallbackRef.current);
           }
         } catch (err) {
-          console.error("[Recorder] Failed to restart transcription:", err);
-          // Continue recording even if transcription fails
+          console.error("[Recorder][Transcription] start failed (resume):", err);
         }
       }
 
@@ -745,6 +743,13 @@ function RecorderPageContent() {
       return finalUpdated;
     });
 
+    console.log("[Recorder][Transcription] speaker tag inserted", {
+      kind: "sharing",
+      speaker: memberName,
+      timestampMs: currentMs,
+      currentSpeakerRef: memberName,
+    });
+
     // Keep dropdown open if requested (for consecutive tagging) or if keepDropdownOpen is true
     if (!keepOpen && !keepDropdownOpen) {
       setShowMemberDropdown(false);
@@ -757,11 +762,11 @@ function RecorderPageContent() {
     // Only restart transcription if it actually stopped (e.g. focus loss). Do not re-register callback.
     if (state === "recording" && transcription.isAvailable && !transcription.isActive) {
       try {
-        console.log("[Recorder] Transcription stopped, restarting after speaker selection...");
+        console.log("[Recorder][Transcription] start requested (after sharing tag; was inactive)");
         await transcription.start();
-        console.log("[Recorder] Transcription restarted successfully");
+        console.log("[Recorder][Transcription] start completed (after sharing tag)");
       } catch (err) {
-        console.error("[Recorder] Failed to restart transcription after speaker selection:", err);
+        console.error("[Recorder][Transcription] start failed (after sharing tag):", err);
       }
     }
   };
@@ -881,6 +886,13 @@ function RecorderPageContent() {
       return finalUpdated;
     });
 
+    console.log("[Recorder][Transcription] speaker tag inserted", {
+      kind: "sermon",
+      speaker: speakerName,
+      timestampMs: currentMs,
+      currentSpeakerRef: speakerName,
+    });
+
     // Close dropdown after selection
     setShowSermonSpeakerDropdown(false);
     setSermonSpeakerSearchQuery("");
@@ -888,21 +900,19 @@ function RecorderPageContent() {
     // Only restart transcription if it actually stopped. Do not re-register callback.
     if (state === "recording" && transcription.isAvailable && !transcription.isActive) {
       try {
-        console.log("[Recorder] Transcription stopped, restarting after sermon speaker selection...");
+        console.log("[Recorder][Transcription] start requested (after sermon tag; was inactive)");
         await transcription.start();
-        console.log("[Recorder] Transcription restarted successfully");
+        console.log("[Recorder][Transcription] start completed (after sermon tag)");
       } catch (err) {
-        console.error("[Recorder] Failed to restart transcription after sermon speaker selection:", err);
+        console.error("[Recorder][Transcription] start failed (after sermon tag):", err);
       }
     }
   };
 
-  // Set up transcription callback
-  // Use a ref to persist the seenFinalTexts Set across renders
-  const seenFinalTextsRef = useRef<Set<string>>(new Set());
-  const transcriptionCallbackRef = useRef<((chunk: TranscriptChunk) => void) | null>(null);
-  // Ref that holds the latest chunk handler so the forwarder always runs current logic (avoids stale closure)
-  const chunkHandlerRef = useRef<(chunk: TranscriptChunk) => void>(() => {});
+  type RecentFinalDedupe = { text: string; assignedAtWallMs: number };
+  const recentFinalDedupeRef = useRef<RecentFinalDedupe[]>([]);
+  const transcriptionCallbackRef = useRef<((chunk: LiveRecognitionChunk) => void) | null>(null);
+  const chunkHandlerRef = useRef<(chunk: LiveRecognitionChunk) => void>(() => {});
   // Track last chunk time for health check - if no chunks for 2 min while recording, force restart
   const lastChunkTimeRef = useRef<number>(0);
 
@@ -910,50 +920,81 @@ function RecorderPageContent() {
   useEffect(() => {
     if (!transcription.isAvailable) return;
 
-    const handleChunk = (chunk: TranscriptChunk) => {
-      if (!chunk || typeof chunk.text !== "string") {
-        console.warn("[Recorder] Ignoring invalid chunk:", chunk);
+    const shouldSkipRecentDuplicateFinal = (text: string): boolean => {
+      const wallMs = Date.now();
+      const pruned = recentFinalDedupeRef.current.filter(
+        (e) => wallMs - e.assignedAtWallMs < LIVE_FINAL_DEDUPE_WINDOW_MS
+      );
+      recentFinalDedupeRef.current = pruned;
+      if (pruned.some((e) => e.text === text)) {
+        console.log("[Recorder][Transcription] skip duplicate final (recent window)", {
+          textPreview: text.slice(0, 80),
+          windowMs: LIVE_FINAL_DEDUPE_WINDOW_MS,
+        });
+        return true;
+      }
+      pruned.push({ text, assignedAtWallMs: wallMs });
+      return false;
+    };
+
+    const handleChunk = (chunk: LiveRecognitionChunk) => {
+      if (!chunk || typeof chunk.text !== "string" || typeof chunk.isFinal !== "boolean") {
+        console.warn("[Recorder][Transcription] ignoring invalid chunk:", chunk);
         return;
       }
+
+      console.log("[Recorder][Transcription] chunk received", {
+        textPreview: chunk.text.slice(0, 100),
+        isFinal: chunk.isFinal,
+      });
+
       lastChunkTimeRef.current = Date.now();
-      const speaker = currentSpeakerRef.current || undefined;
-      // Store raw transcript text; do not prepend speaker name to every phrase (speaker appears once via tag + metadata)
-      const chunkWithSpeaker: TranscriptChunk = {
-        ...chunk,
-        text: chunk.text,
-        speaker: speaker,
-      };
+      const timestampMs = getCurrentElapsedMs();
+      console.log("[Recorder][Transcription] chunk timestamp assigned", {
+        timestampMs,
+        isFinal: chunk.isFinal,
+      });
+
+      const speakerAtChunk = currentSpeakerRef.current ?? undefined;
+      console.log("[Recorder][Transcription] current speaker at chunk", {
+        speaker: speakerAtChunk ?? null,
+      });
+
+      if (chunk.isFinal && shouldSkipRecentDuplicateFinal(chunk.text)) {
+        return;
+      }
 
       setTranscriptChunks((prev) => {
-        if (chunk.speakerTag) {
-          const updated = [...prev, chunk];
-          transcriptChunksRef.current = updated;
-          currentSpeakerRef.current = chunk.speaker || null;
-          setCurrentSpeaker(chunk.speaker || null);
-          return updated;
-        }
-        if (!chunkWithSpeaker.isFinal) {
+        if (!chunk.isFinal) {
+          const interim: TranscriptChunk = {
+            text: chunk.text,
+            timestampMs,
+            isFinal: false,
+            speaker: speakerAtChunk,
+          };
           if (prev.length > 0 && !prev[prev.length - 1].isFinal) {
-            return [...prev.slice(0, -1), chunkWithSpeaker];
+            const next = [...prev.slice(0, -1), interim];
+            transcriptChunksRef.current = next;
+            return next;
           }
-          if (!seenFinalTextsRef.current.has(chunk.text)) {
-            return [...prev, chunkWithSpeaker];
-          }
-          return prev;
+          const next = [...prev, interim];
+          transcriptChunksRef.current = next;
+          return next;
         }
-        if (seenFinalTextsRef.current.has(chunk.text)) {
-          return prev;
-        }
-        seenFinalTextsRef.current.add(chunk.text);
-        const updated = [
-          ...prev.filter(c => {
-            if (!c || typeof c.text !== "string") return false;
-            if (c.isFinal) return true;
-            const cOriginalText = c.text.replace(/^\[[^\]]+\]:\s*/, '').replace(/^[^-]+\s*-\s*/, '');
-            return cOriginalText !== chunk.text;
-          }),
-          chunkWithSpeaker
-        ];
+
+        const base =
+          prev.length > 0 && !prev[prev.length - 1].isFinal
+            ? prev.slice(0, -1)
+            : prev;
+
+        const finalChunk: TranscriptChunk = {
+          text: chunk.text,
+          timestampMs,
+          isFinal: true,
+          speaker: speakerAtChunk,
+        };
+
+        const updated = [...base, finalChunk];
         transcriptChunksRef.current = updated;
         if (updated.length > 500) {
           const trimmed = updated.slice(-500);
@@ -976,7 +1017,7 @@ function RecorderPageContent() {
     };
     transcriptionCallbackRef.current = forwarder;
     transcription.onTextChunk(forwarder);
-  }, [transcription.isAvailable, transcription.onTextChunk]);
+  }, [transcription.isAvailable, transcription.onTextChunk, getCurrentElapsedMs]);
 
   // Sync our forwarder into the provider's ref when transcription becomes active (after start/resume).
   // The engine always uses the provider's stable wrapper; we only update the ref it forwards to.
@@ -997,8 +1038,12 @@ function RecorderPageContent() {
       if (last === 0) return; // No chunks yet this session
       const elapsed = Date.now() - last;
       if (elapsed > TRANSCRIPT_STALE_MS) {
-        console.warn("[Recorder] No transcript chunks for", Math.round(elapsed / 1000), "s - forcing transcription restart");
+        console.warn(
+          "[Recorder][Transcription] stale — restart requested (health check)",
+          { idleSeconds: Math.round(elapsed / 1000) }
+        );
         try {
+          console.log("[Recorder][Transcription] stop requested (health check)");
           transcription.stop();
           await new Promise((r) => setTimeout(r, 200));
           if (transcriptionCallbackRef.current) {
@@ -1006,9 +1051,9 @@ function RecorderPageContent() {
           }
           await transcription.start();
           lastChunkTimeRef.current = Date.now();
-          console.log("[Recorder] Transcription restarted by health check");
+          console.log("[Recorder][Transcription] start completed (health check)");
         } catch (err) {
-          console.error("[Recorder] Health check restart failed:", err);
+          console.error("[Recorder][Transcription] health check restart failed:", err);
         }
       }
     }, HEALTH_CHECK_INTERVAL_MS);

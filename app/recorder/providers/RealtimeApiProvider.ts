@@ -1,18 +1,16 @@
-import type { TranscriptionProvider, TranscriptChunk } from "../types/transcription";
+import type { TranscriptionProvider, LiveRecognitionChunk } from "../types/transcription";
 
 export class RealtimeApiProvider implements TranscriptionProvider {
-  private textChunkCallback: ((chunk: TranscriptChunk) => void) | null = null;
-  private startTimeMs: number = 0;
+  private textChunkCallback: ((chunk: LiveRecognitionChunk) => void) | null = null;
 
   async start(): Promise<void> {
     // TODO: Initialize Realtime API connection
     // TODO: Set up WebSocket or streaming connection
     // TODO: Configure API keys and authentication
-    this.startTimeMs = Date.now();
     throw new Error("RealtimeApiProvider is not yet implemented");
   }
 
-  onTextChunk(callback: (chunk: TranscriptChunk) => void): void {
+  onTextChunk(callback: (chunk: LiveRecognitionChunk) => void): void {
     // TODO: Set up callback for receiving transcript chunks from API
     this.textChunkCallback = callback;
   }

@@ -1,3 +1,4 @@
+/** Stored transcript line with recorder-relative timing and optional speaker metadata. */
 export interface TranscriptChunk {
   text: string;
   timestampMs: number;
@@ -6,9 +7,18 @@ export interface TranscriptChunk {
   speakerTag?: boolean; // True if this chunk is a speaker tag marker (e.g., "[John sharing:]")
 }
 
+/**
+ * Emitted by speech engines only. The recorder assigns `timestampMs` and attaches `speaker`
+ * from `currentSpeakerRef` when appending to the transcript.
+ */
+export interface LiveRecognitionChunk {
+  text: string;
+  isFinal: boolean;
+}
+
 export interface TranscriptionProvider {
   start(): Promise<void>;
-  onTextChunk(callback: (chunk: TranscriptChunk) => void): void;
+  onTextChunk(callback: (chunk: LiveRecognitionChunk) => void): void;
   stop(): void;
   isAvailable(): boolean;
   getProviderName(): string;
