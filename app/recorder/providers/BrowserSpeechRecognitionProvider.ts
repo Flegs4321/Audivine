@@ -65,6 +65,12 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
   /** When true, skip processLocally (on-device requires language pack; fall back to cloud) */
   private useCloudFallback: boolean = false;
 
+  /** New SpeechRecognition instances reset result indices; keep bookkeeping in sync. */
+  private resetStateForNewRecognitionInstance(): void {
+    this.lastProcessedIndex = 0;
+    this.sentFinalTexts.clear();
+  }
+
   constructor() {
     const SpeechRecognitionClass =
       window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -86,9 +92,16 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
     this.recognition.continuous = true;
     this.recognition.interimResults = true;
     this.recognition.lang = "en-US";
-    // On Chrome 139+, use on-device recognition so it works on deployed sites (Vercel).
-    // If the device doesn't have the language pack we get language-not-supported and fall back to cloud.
-    if (!this.useCloudFallback && "processLocally" in this.recognition) {
+    // Forcing on-device often yields zero onresult events without a language pack (looks like "no audio").
+    // Default to network recognition; opt in with NEXT_PUBLIC_SPEECH_ON_DEVICE=true.
+    const preferOnDevice =
+      typeof process !== "undefined" &&
+      process.env.NEXT_PUBLIC_SPEECH_ON_DEVICE === "true";
+    if (
+      preferOnDevice &&
+      !this.useCloudFallback &&
+      "processLocally" in this.recognition
+    ) {
       (this.recognition as SpeechRecognition).processLocally = true;
     }
 
@@ -173,8 +186,7 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
         return;
       }
       
-      // "aborted" occurs when recognition is stopped/interrupted (e.g., when pausing recording)
-      if (errorType === "aborted") {
+      if (errorType === "aborted" || errorType === "interrupted") {
         return;
       }
 
@@ -200,6 +212,7 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
           const savedCallback = this.textChunkCallback;
           this.recognition = new SpeechRecognitionClass();
           this.textChunkCallback = savedCallback;
+          this.resetStateForNewRecognitionInstance();
           this.setupRecognition();
           try {
             this.recognition.start();
@@ -236,6 +249,7 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
               const savedCallback = this.textChunkCallback;
               this.recognition = new SpeechRecognitionClass();
               this.textChunkCallback = savedCallback;
+              this.resetStateForNewRecognitionInstance();
               this.setupRecognition();
               this.recognition!.start();
               console.log(`[BrowserSpeechRecognition] Auto-restarted with fresh instance (attempt ${attempt + 1})`);
@@ -288,10 +302,8 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
     this.setupRecognition();
     console.log("[BrowserSpeechRecognition] Recognition setup complete, callback present:", !!this.textChunkCallback);
 
-    // Reset state for new recording session
     this.startTimeMs = Date.now();
-    this.lastProcessedIndex = 0;
-    this.sentFinalTexts.clear();
+    this.resetStateForNewRecognitionInstance();
     this.noSpeechCount = 0;
     this.isRunning = true;
 

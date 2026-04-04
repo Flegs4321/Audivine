@@ -4,6 +4,8 @@ export interface TranscriptChunk {
   isFinal?: boolean;
   speaker?: string; // Name of the speaker for this chunk
   speakerTag?: boolean; // True if this chunk is a speaker tag marker (e.g., "[John sharing:]")
+  /** Set on API when chunk comes from Whisper merge (idempotency for re-transcribe). */
+  source?: "whisper";
 }
 
 export interface TranscriptionProvider {

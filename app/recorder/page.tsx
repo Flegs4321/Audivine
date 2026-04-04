@@ -1917,9 +1917,9 @@ function RecorderPageContent() {
                   </div>
                 ) : transcriptChunks.length === 0 && transcription.noSpeechDetected ? (
                   <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg text-amber-800 text-sm">
-                    <p className="font-medium mb-1">Live transcript not receiving audio</p>
+                    <p className="font-medium mb-1">No live captions yet</p>
                     <p className="text-xs mb-2">
-                      The browser isn’t detecting speech. Check that your microphone is allowed, the correct input device is selected, and try speaking clearly. You’ll still get a transcript after recording (Whisper).
+                      The speech service reported “no speech” before any text arrived (this can happen even when the mic works). Keep speaking; captions should appear once recognition starts. Use Chrome or Edge on a stable connection. If Settings uses OpenAI, you’ll still get a full transcript after upload.
                     </p>
                   </div>
                 ) : transcriptChunks.length === 0 ? (

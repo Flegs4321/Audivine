@@ -156,19 +156,19 @@ export async function POST(request: NextRequest) {
       .eq("user_id", user.id)
       .single();
 
+    // Idempotency: only skip if this recording was already merged from Whisper.
+    // Browser live chunks and speaker-tag-only rows also have isFinal + timestampMs;
+    // treating those as "done" wrongly skipped Whisper (e.g. only speaker tags saved → no text).
     if (existingRecording?.transcript_chunks && Array.isArray(existingRecording.transcript_chunks) && existingRecording.transcript_chunks.length > 0) {
-      // Check if chunks already have Whisper transcription (have timestamps and are final)
-      // If they do, return existing
-      const hasWhisperTranscription = existingRecording.transcript_chunks.some(
-        (chunk: any) => chunk.isFinal && typeof chunk.timestampMs === 'number'
+      const alreadyWhispered = existingRecording.transcript_chunks.some(
+        (chunk: any) => chunk?.source === "whisper"
       );
-      
-      if (hasWhisperTranscription) {
-        // Already transcribed, return existing
+
+      if (alreadyWhispered) {
         const transcript = existingRecording.transcript_chunks
           .map((chunk: any) => chunk.text)
           .join(" ");
-        
+
         return NextResponse.json({
           success: true,
           transcript,
@@ -283,11 +283,13 @@ export async function POST(request: NextRequest) {
         isFinal: true,
         speaker: speaker,
         speakerTag: speakerTag || false,
+        source: "whisper" as const,
       };
     }) || [{
       text: transcriptionData.text || "",
       timestampMs: 0,
       isFinal: true,
+      source: "whisper" as const,
     }];
     
     console.log(`[TRANSCRIBE] Preserved speaker info: ${whisperChunks.filter((c: any) => c.speaker).length} chunks with speakers out of ${whisperChunks.length} total`);

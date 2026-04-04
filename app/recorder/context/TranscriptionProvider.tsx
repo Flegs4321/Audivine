@@ -10,7 +10,7 @@ interface TranscriptionContextType {
   providerName: string | null;
   isAvailable: boolean;
   isActive: boolean;
-  /** True when the browser reported "no speech" (mic not detected by speech API) */
+  /** True after first no-speech error; cleared on start and when any transcript chunk arrives */
   noSpeechDetected: boolean;
   start: () => Promise<void>;
   stop: () => void;
@@ -76,6 +76,7 @@ export function TranscriptionProviderComponent({ children }: { children: React.R
         }
         return;
       }
+      setNoSpeechDetected(false);
       const fn = chunkCallbackRef.current;
       if (typeof fn !== "function") return;
       try {
