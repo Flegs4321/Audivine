@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { TranscriptionProviderComponent, useTranscription } from "./context/TranscriptionProvider";
@@ -154,6 +154,30 @@ function RecorderPageContent() {
   const elapsedTimeRef = useRef<number>(0);
   const transcriptEndRef = useRef<HTMLDivElement | null>(null);
   const currentSpeakerRef = useRef<string | null>(null); // Ref to track current speaker for transcript chunks
+
+  const seenFinalTextsRef = useRef<Set<string>>(new Set());
+  const transcriptionCallbackRef = useRef<((chunk: TranscriptChunk) => void) | null>(null);
+  const chunkHandlerRef = useRef<(chunk: TranscriptChunk) => void>(() => {});
+  const lastChunkTimeRef = useRef<number>(0);
+
+  /** Web Speech often dies after dropdown/focus changes; isActive can stay true while no results arrive. */
+  const restartLiveTranscription = useCallback(
+    async (reason: string) => {
+      if (!transcription.isAvailable) return;
+      console.log(`[Recorder] Live transcription restart (${reason})`);
+      try {
+        if (transcription.isActive) transcription.stop();
+        await new Promise((r) => setTimeout(r, 280));
+        if (transcriptionCallbackRef.current) {
+          transcription.onTextChunk(transcriptionCallbackRef.current);
+        }
+        await transcription.start();
+      } catch (err) {
+        console.error("[Recorder] Live transcription restart failed:", err);
+      }
+    },
+    [transcription]
+  );
 
   // Timer effect
   useEffect(() => {
@@ -422,7 +446,7 @@ function RecorderPageContent() {
             if (transcriptionCallbackRef.current) {
               transcription.onTextChunk(transcriptionCallbackRef.current);
             }
-            await new Promise((r) => setTimeout(r, 500)); // Let mic stream stabilize
+            await new Promise((r) => setTimeout(r, 750)); // Let mic stream stabilize before Web Speech
             await transcription.start();
           } catch (err) {
             console.error("[Recorder] Failed to start transcription:", err);
@@ -439,11 +463,10 @@ function RecorderPageContent() {
 
   const handleEndRecording = async () => {
     try {
-      // Stop transcription
       if (transcription.isActive) {
         transcription.stop();
-        // Give it a moment to fully stop before ending
-        await new Promise(resolve => setTimeout(resolve, 100));
+        // Let the speech engine flush pending results to onresult before we snapshot
+        await new Promise((resolve) => setTimeout(resolve, 450));
       }
 
       // Close active segment if any
@@ -464,9 +487,10 @@ function RecorderPageContent() {
       } else {
         segmentsRef.current = segments;
       }
-      
-      // Update refs with final values
-      transcriptChunksRef.current = transcriptChunks;
+
+      // transcriptChunksRef is updated inside the chunk handler and is the source of truth for upload.
+      // Do not assign from `transcriptChunks` state here — that value can lag and would drop live text.
+      setTranscriptChunks(() => [...transcriptChunksRef.current]);
       elapsedTimeRef.current = elapsedTime;
 
       // Stop MediaRecorder if it's active
@@ -754,15 +778,8 @@ function RecorderPageContent() {
       setMemberSearchQuery("");
     }
 
-    // Only restart transcription if it actually stopped (e.g. focus loss). Do not re-register callback.
-    if (state === "recording" && transcription.isAvailable && !transcription.isActive) {
-      try {
-        console.log("[Recorder] Transcription stopped, restarting after speaker selection...");
-        await transcription.start();
-        console.log("[Recorder] Transcription restarted successfully");
-      } catch (err) {
-        console.error("[Recorder] Failed to restart transcription after speaker selection:", err);
-      }
+    if (state === "recording" && transcription.isAvailable) {
+      await restartLiveTranscription("after sharing speaker tag");
     }
   };
 
@@ -885,26 +902,10 @@ function RecorderPageContent() {
     setShowSermonSpeakerDropdown(false);
     setSermonSpeakerSearchQuery("");
 
-    // Only restart transcription if it actually stopped. Do not re-register callback.
-    if (state === "recording" && transcription.isAvailable && !transcription.isActive) {
-      try {
-        console.log("[Recorder] Transcription stopped, restarting after sermon speaker selection...");
-        await transcription.start();
-        console.log("[Recorder] Transcription restarted successfully");
-      } catch (err) {
-        console.error("[Recorder] Failed to restart transcription after sermon speaker selection:", err);
-      }
+    if (state === "recording" && transcription.isAvailable) {
+      await restartLiveTranscription("after sermon speaker tag");
     }
   };
-
-  // Set up transcription callback
-  // Use a ref to persist the seenFinalTexts Set across renders
-  const seenFinalTextsRef = useRef<Set<string>>(new Set());
-  const transcriptionCallbackRef = useRef<((chunk: TranscriptChunk) => void) | null>(null);
-  // Ref that holds the latest chunk handler so the forwarder always runs current logic (avoids stale closure)
-  const chunkHandlerRef = useRef<(chunk: TranscriptChunk) => void>(() => {});
-  // Track last chunk time for health check - if no chunks for 2 min while recording, force restart
-  const lastChunkTimeRef = useRef<number>(0);
 
   // Build the actual chunk handler and store in ref so it always has latest setTranscriptChunks etc.
   useEffect(() => {
@@ -925,7 +926,7 @@ function RecorderPageContent() {
       };
 
       setTranscriptChunks((prev) => {
-        if (chunk.speakerTag) {
+        if (chunk.speakerTag === true) {
           const updated = [...prev, chunk];
           transcriptChunksRef.current = updated;
           currentSpeakerRef.current = chunk.speaker || null;
@@ -1014,6 +1015,16 @@ function RecorderPageContent() {
     }, HEALTH_CHECK_INTERVAL_MS);
     return () => clearInterval(id);
   }, [state, transcription]);
+
+  // If Web Speech never delivered a chunk, restart once after 12s (cold start / policy quirks).
+  useEffect(() => {
+    if (state !== "recording" || !transcription.isAvailable) return;
+    const id = window.setTimeout(() => {
+      if (lastChunkTimeRef.current !== 0) return;
+      void restartLiveTranscription("no chunks in first 12s");
+    }, 12000);
+    return () => clearTimeout(id);
+  }, [state, transcription.isAvailable, restartLiveTranscription]);
 
   // Handle automatic section analysis
   const handleAnalyzeSections = async () => {
