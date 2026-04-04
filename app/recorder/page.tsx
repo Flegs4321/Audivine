@@ -60,6 +60,7 @@ function RecorderPageContent() {
           const data = await response.json();
           const method = (data.settings?.transcription_method as "browser" | "openai") || "browser";
           setTranscriptionMethod(method);
+          setHasConfiguredOpenAiKey(Boolean(data.settings?.openai_api_key));
         }
       } catch (err) {
         console.error("Error loading transcription method:", err);
@@ -136,6 +137,10 @@ function RecorderPageContent() {
   const [audioInputDevices, setAudioInputDevices] = useState<MediaDeviceInfo[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | undefined>(undefined);
   const [transcriptionMethod, setTranscriptionMethod] = useState<"browser" | "openai">("browser");
+  /** User has saved an OpenAI key (masked in API response; presence only). */
+  const [hasConfiguredOpenAiKey, setHasConfiguredOpenAiKey] = useState(false);
+  /** Browser mode: switched to slice-based Whisper after no Web Speech text. */
+  const [browserLiveWhisperFallback, setBrowserLiveWhisperFallback] = useState(false);
   const [sharingHintDismissed, setSharingHintDismissed] = useState(() => {
     if (typeof window === "undefined") return false;
     return window.localStorage.getItem("recorder-sharing-hint-dismissed") === "1";
@@ -193,10 +198,32 @@ function RecorderPageContent() {
   const transcriptionCallbackRef = useRef<((chunk: TranscriptChunk) => void) | null>(null);
   const chunkHandlerRef = useRef<(chunk: TranscriptChunk) => void>(() => {});
   const lastChunkTimeRef = useRef<number>(0);
+  const recordingStateRef = useRef<RecordingState>("idle");
+  const liveWhisperEnabledForSessionRef = useRef(false);
+  const liveWhisperInFlightRef = useRef(false);
+  const liveWhisperFallbackTimerRef = useRef<number | null>(null);
+  const selectedMimeTypeRef = useRef<string>("audio/webm");
+
+  useEffect(() => {
+    recordingStateRef.current = state;
+  }, [state]);
+
+  const clearLiveWhisperFallbackTimer = useCallback(() => {
+    if (liveWhisperFallbackTimerRef.current !== null) {
+      clearTimeout(liveWhisperFallbackTimerRef.current);
+      liveWhisperFallbackTimerRef.current = null;
+    }
+  }, []);
 
   /** Web Speech often dies after dropdown/focus changes; isActive can stay true while no results arrive. */
   const restartLiveTranscription = useCallback(
     async (reason: string) => {
+      if (transcriptionMethod === "openai" && hasConfiguredOpenAiKey) {
+        setLiveSpeechHint(
+          "Live captions use ~5s OpenAI slices while recording. There is no browser speech engine to restart."
+        );
+        return;
+      }
       if (!transcription.isAvailable) return;
       console.log(`[Recorder] Live transcription restart (${reason})`);
       try {
@@ -210,7 +237,7 @@ function RecorderPageContent() {
         console.error("[Recorder] Live transcription restart failed:", err);
       }
     },
-    [transcription]
+    [transcription, transcriptionMethod, hasConfiguredOpenAiKey]
   );
 
   // Timer effect
@@ -274,6 +301,16 @@ function RecorderPageContent() {
       : Date.now();
     return now - startTimeRef.current - pausedTimeRef.current;
   };
+
+  /** For async callbacks where React `state` may be stale. */
+  const getCurrentElapsedMsFromRefs = useCallback((): number => {
+    if (startTimeRef.current === null) return 0;
+    const now =
+      recordingStateRef.current === "paused" && pauseStartTimeRef.current !== null
+        ? pauseStartTimeRef.current
+        : Date.now();
+    return now - startTimeRef.current - pausedTimeRef.current;
+  }, []);
 
   // Enumerate available audio input devices
   const enumerateAudioDevices = async (forcePermission = false) => {
@@ -342,6 +379,7 @@ function RecorderPageContent() {
 
   const handleStartRecording = async () => {
     try {
+      clearLiveWhisperFallbackTimer();
       setError(null);
       // Clean up previous audio URL to prevent memory leaks
       if (audioUrlRef.current) {
@@ -406,6 +444,7 @@ function RecorderPageContent() {
       }
       
       setMimeType(selectedMimeType);
+      selectedMimeTypeRef.current = selectedMimeType;
 
       // Create standard MediaRecorder
       const mediaRecorder = new MediaRecorder(stream, {
@@ -414,12 +453,77 @@ function RecorderPageContent() {
 
       mediaRecorderRef.current = mediaRecorder;
 
-      // Collect audio chunks
+      setBrowserLiveWhisperFallback(false);
+      liveWhisperEnabledForSessionRef.current =
+        hasConfiguredOpenAiKey && transcriptionMethod === "openai";
+      if (hasConfiguredOpenAiKey && transcriptionMethod === "browser") {
+        liveWhisperFallbackTimerRef.current = window.setTimeout(() => {
+          liveWhisperFallbackTimerRef.current = null;
+          if (recordingStateRef.current !== "recording") return;
+          const meaningful = transcriptChunksRef.current.some(
+            (c) =>
+              !c.speakerTag &&
+              typeof c.text === "string" &&
+              c.text.trim().length > 0
+          );
+          if (!meaningful) {
+            liveWhisperEnabledForSessionRef.current = true;
+            setBrowserLiveWhisperFallback(true);
+            setLiveSpeechHint(
+              "Browser speech had no text; using OpenAI on ~5s audio slices (uses your API key)."
+            );
+          }
+        }, 15000);
+      }
+
+      // Collect audio chunks; optional live Whisper on each timeslice (see mediaRecorder.start below).
       mediaRecorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
           audioChunksRef.current.push(event.data);
-        } else {
         }
+        if (!hasConfiguredOpenAiKey) return;
+        const slice = event.data;
+        if (slice.size < 1600) return;
+        void (async () => {
+          if (!liveWhisperEnabledForSessionRef.current) return;
+          if (recordingStateRef.current !== "recording") return;
+          if (liveWhisperInFlightRef.current) return;
+          liveWhisperInFlightRef.current = true;
+          try {
+            const { supabase } = await import("@/lib/supabase/client");
+            const {
+              data: { session },
+            } = await supabase.auth.getSession();
+            if (!session?.access_token) return;
+            const fd = new FormData();
+            const type = slice.type || selectedMimeTypeRef.current || "audio/webm";
+            fd.append("file", slice, "slice.webm");
+            const res = await fetch("/api/recorder/live-whisper", {
+              method: "POST",
+              headers: { Authorization: `Bearer ${session.access_token}` },
+              body: fd,
+            });
+            if (!res.ok) {
+              const err = await res.json().catch(() => ({}));
+              console.warn("[Recorder] live-whisper:", res.status, err);
+              return;
+            }
+            const data = (await res.json()) as { text?: string; skipped?: boolean };
+            if (data.skipped || !data.text?.trim()) return;
+            chunkHandlerRef.current?.({
+              text: data.text.trim(),
+              timestampMs: getCurrentElapsedMsFromRefs(),
+              isFinal: true,
+              source: "whisper-live",
+            });
+            lastChunkTimeRef.current = Date.now();
+            setLiveSpeechHint(null);
+          } catch (e) {
+            console.warn("[Recorder] live-whisper request failed:", e);
+          } finally {
+            liveWhisperInFlightRef.current = false;
+          }
+        })();
       };
 
       // Handle when recording stops
@@ -468,10 +572,18 @@ function RecorderPageContent() {
       lastChunkTimeRef.current = 0;
       setLiveSpeechHint(null);
 
-      // Start capture first; defer speech to next microtask so both can attach to the mic on finicky drivers.
-      mediaRecorder.start();
+      // Timeslice when an API key exists so we can POST slices for live Whisper (works when Web Speech + MediaRecorder conflict).
+      if (hasConfiguredOpenAiKey) {
+        mediaRecorder.start(5000);
+      } else {
+        mediaRecorder.start();
+      }
 
-      if (transcription.isAvailable) {
+      const shouldUseBrowserSpeech =
+        transcription.isAvailable &&
+        !(transcriptionMethod === "openai" && hasConfiguredOpenAiKey);
+
+      if (shouldUseBrowserSpeech) {
         if (transcriptionCallbackRef.current) {
           transcription.onTextChunk(transcriptionCallbackRef.current);
         }
@@ -479,12 +591,17 @@ function RecorderPageContent() {
           void transcription.start().catch((err) => {
             console.error("[Recorder] Failed to start live transcription:", err);
             setError(
-              "Live captions failed to start (recording still works). Click “Restart live captions”, or use OpenAI in Settings for text after upload."
+              "Live captions failed to start (recording still works). Click “Restart live captions”, or add an OpenAI key in Settings for slice-based live captions."
             );
           });
         });
+      } else if (transcriptionMethod === "openai" && hasConfiguredOpenAiKey) {
+        setLiveSpeechHint(
+          "Live captions: OpenAI transcribes ~every 5 seconds (uses your API key). Full-file Whisper after upload may refine the text."
+        );
       }
     } catch (err) {
+      clearLiveWhisperFallbackTimer();
       console.error("Error starting recording:", err);
       setError(err instanceof Error ? err.message : "Failed to start recording");
       setState("idle");
@@ -493,6 +610,7 @@ function RecorderPageContent() {
 
   const handleEndRecording = async () => {
     try {
+      clearLiveWhisperFallbackTimer();
       if (transcription.isActive) {
         transcription.stop();
         // Let the speech engine flush pending results to onresult before we snapshot
@@ -584,7 +702,11 @@ function RecorderPageContent() {
         pauseStartTimeRef.current = null;
       }
 
-      if (transcription.isAvailable && !transcription.isActive) {
+      const shouldUseBrowserSpeech =
+        transcription.isAvailable &&
+        !(transcriptionMethod === "openai" && hasConfiguredOpenAiKey);
+
+      if (shouldUseBrowserSpeech && !transcription.isActive) {
         try {
           if (transcriptionCallbackRef.current) {
             transcription.onTextChunk(transcriptionCallbackRef.current);
@@ -1041,12 +1163,19 @@ function RecorderPageContent() {
   // If Web Speech never delivered a chunk, restart once after 12s (cold start / policy quirks).
   useEffect(() => {
     if (state !== "recording" || !transcription.isAvailable) return;
+    if (transcriptionMethod === "openai" && hasConfiguredOpenAiKey) return;
     const id = window.setTimeout(() => {
       if (lastChunkTimeRef.current !== 0) return;
       void restartLiveTranscription("no chunks in first 12s");
     }, 12000);
     return () => clearTimeout(id);
-  }, [state, transcription.isAvailable, restartLiveTranscription]);
+  }, [
+    state,
+    transcription.isAvailable,
+    restartLiveTranscription,
+    transcriptionMethod,
+    hasConfiguredOpenAiKey,
+  ]);
 
   // Handle automatic section analysis
   const handleAnalyzeSections = async () => {
@@ -1137,6 +1266,7 @@ function RecorderPageContent() {
           isFinal: c.isFinal ?? true,
           speaker: c.speaker,
           speakerTag: c.speakerTag,
+          ...(c.source ? { source: c.source } : {}),
         })),
         mimeType,
         fileSize: blob.size,
@@ -1937,51 +2067,65 @@ function RecorderPageContent() {
               <div className="mb-4">
                 <div className="text-xs text-gray-500">
                   Method: <span className="font-medium text-gray-600">
-                    {transcriptionMethod === "browser" 
-                      ? transcription.providerName || "Browser Speech Recognition"
-                      : "OpenAI Whisper API"}
+                    {transcriptionMethod === "browser"
+                      ? browserLiveWhisperFallback && hasConfiguredOpenAiKey
+                        ? "Browser speech + OpenAI slices (fallback)"
+                        : transcription.providerName || "Browser Speech Recognition"
+                      : hasConfiguredOpenAiKey
+                        ? "OpenAI (live slices + full file after upload)"
+                        : "OpenAI Whisper API"}
                   </span>
                 </div>
-                {(state === "recording" || state === "paused") && transcription.isAvailable && (
+                {(state === "recording" || state === "paused") && (
                   <div className="mt-3 space-y-2">
                     {liveSpeechHint && (
                       <div className="text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded p-2">
-                        <span className="font-semibold">Speech: </span>
+                        <span className="font-semibold">Captions: </span>
                         {liveSpeechHint}
                       </div>
                     )}
-                    <button
-                      type="button"
-                      onClick={() => void restartLiveTranscription("button: Restart live captions")}
-                      className="text-xs font-medium text-blue-700 hover:text-blue-900 underline"
-                    >
-                      Restart live captions
-                    </button>
-                    <p className="text-[11px] text-gray-500">
-                      Uses this click to re-bind speech (helps when Chrome/Edge block background starts).
-                    </p>
-                    <details className="text-[11px] text-gray-600">
-                      <summary className="cursor-pointer font-medium text-gray-700">
-                        If nothing appears live (Chrome &amp; Edge both use the same engine)
-                      </summary>
-                      <ul className="list-disc pl-4 mt-1 space-y-1">
-                        <li>Open DevTools (F12) → Console, filter: BrowserSpeechRecognition</li>
-                        <li>Try a phone hotspot — school/work Wi‑Fi often blocks Google speech</li>
-                        <li>Turn off VPN and disable ad-blockers for this site</li>
-                        <li>Windows: Settings → Privacy → Microphone → allow your browser</li>
-                        <li>
-                          Settings → transcription: choose <strong>OpenAI</strong> for a full transcript after
-                          upload without depending on live browser speech
-                        </li>
-                      </ul>
-                    </details>
+                    {transcriptionMethod === "openai" && hasConfiguredOpenAiKey && (
+                      <p className="text-[11px] text-gray-600">
+                        Live text is updated about every 5 seconds via your OpenAI key (short audio slices). Expect a short delay compared to true streaming.
+                      </p>
+                    )}
+                    {transcription.isAvailable &&
+                      !(transcriptionMethod === "openai" && hasConfiguredOpenAiKey) && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => void restartLiveTranscription("button: Restart live captions")}
+                            className="text-xs font-medium text-blue-700 hover:text-blue-900 underline"
+                          >
+                            Restart live captions
+                          </button>
+                          <p className="text-[11px] text-gray-500">
+                            Uses this click to re-bind speech (helps when Chrome/Edge block background starts).
+                          </p>
+                          <details className="text-[11px] text-gray-600">
+                            <summary className="cursor-pointer font-medium text-gray-700">
+                              If nothing appears live (Chrome &amp; Edge both use the same engine)
+                            </summary>
+                            <ul className="list-disc pl-4 mt-1 space-y-1">
+                              <li>Open DevTools (F12) → Console, filter: BrowserSpeechRecognition</li>
+                              <li>Add an OpenAI key in Settings — we can transcribe ~5s slices while you record</li>
+                              <li>Try a phone hotspot — school/work Wi‑Fi often blocks Google speech</li>
+                              <li>Turn off VPN and disable ad-blockers for this site</li>
+                              <li>Windows: Settings → Privacy → Microphone → allow your browser</li>
+                            </ul>
+                          </details>
+                        </>
+                      )}
                   </div>
                 )}
               </div>
               <div className="h-[600px] overflow-y-auto border border-gray-200 rounded-lg p-4 bg-gray-50">
                 {transcriptionMethod === "openai" && transcriptChunks.length > 0 && (
                   <div className="mb-3 p-2 bg-blue-50 border border-blue-200 rounded text-xs text-blue-700">
-                    <strong>Live transcription:</strong> Showing browser transcription for real-time display. More accurate Whisper transcription will replace this after upload.
+                    <strong>Live transcription:</strong>{" "}
+                    {hasConfiguredOpenAiKey
+                      ? "Short OpenAI Whisper slices while recording. A full-file pass after upload may refine wording and timing."
+                      : "Browser captions below when available. Whisper transcription replaces this after upload once your API key is set."}
                   </div>
                 )}
                 {!isSecureContext && transcription.isAvailable ? (
@@ -1991,14 +2135,16 @@ function RecorderPageContent() {
                       Speech recognition requires a secure connection (HTTPS). Open this site using your https:// URL so the live transcript can work.
                     </p>
                   </div>
-                ) : !transcription.isAvailable ? (
+                ) : !transcription.isAvailable &&
+                  !(hasConfiguredOpenAiKey && transcriptionMethod === "openai") ? (
                   <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg text-amber-800 text-sm">
                     <p className="font-medium mb-1">Live transcript not available</p>
                     <p className="text-xs mb-2">
-                      Browser Speech Recognition is not supported in this browser. For live transcripts while recording, use <strong>Microsoft Edge</strong> or <strong>Google Chrome</strong> (Chrome 139+ recommended).
+                      Browser Speech Recognition is not supported in this browser. For live captions while recording, set{" "}
+                      <strong>OpenAI</strong> in Settings, add your API key, and choose OpenAI as the transcription method — we transcribe ~5s audio slices during recording.
                     </p>
                     <p className="text-xs text-amber-700">
-                      Alternatively, switch to OpenAI Whisper in Settings for transcription after upload (works in any browser).
+                      Or use <strong>Microsoft Edge</strong> or <strong>Google Chrome</strong> with browser speech (Chrome 139+ recommended).
                     </p>
                   </div>
                 ) : transcriptChunks.length === 0 && transcription.noSpeechDetected ? (
