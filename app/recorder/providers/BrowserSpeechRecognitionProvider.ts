@@ -98,9 +98,18 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
     this.recognition.continuous = true;
     this.recognition.interimResults = true;
     this.recognition.lang = "en-US";
-    // On Chrome 139+, use on-device recognition so it works on deployed sites (Vercel).
-    // If the device doesn't have the language pack we get language-not-supported and fall back to cloud.
-    if (!this.useCloudFallback && "processLocally" in this.recognition) {
+    // Do not force on-device recognition by default. Chrome/Edge expose `processLocally`, but
+    // setting it true often yields no `onresult` events if the language pack isn't installed
+    // (looks like "live transcript never works"). Network recognition is the reliable default.
+    // Opt in with NEXT_PUBLIC_SPEECH_ON_DEVICE=true when you explicitly want on-device only.
+    const preferOnDevice =
+      typeof process !== "undefined" &&
+      process.env.NEXT_PUBLIC_SPEECH_ON_DEVICE === "true";
+    if (
+      preferOnDevice &&
+      !this.useCloudFallback &&
+      "processLocally" in this.recognition
+    ) {
       (this.recognition as SpeechRecognition).processLocally = true;
     }
 
