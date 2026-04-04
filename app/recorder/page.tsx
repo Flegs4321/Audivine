@@ -416,12 +416,23 @@ function RecorderPageContent() {
       recentFinalDedupeRef.current = [];
       lastChunkTimeRef.current = 0;
       
-      // Start browser transcription if available. Delay so the mic stream is active first;
-      // starting recognition before the mic is "warm" often yields no results (onend/no-speech).
+      // Start transcription if available. Pass MediaStream and auth token for
+      // WhisperLiveProvider (ignored by BrowserSpeechRecognitionProvider).
+      // Delay slightly so the mic stream is "warm" before recognition starts.
       if (transcription.isAvailable) {
         const startTranscription = async () => {
           try {
             console.log("[Recorder][Transcription] start requested (with recording)");
+            // Pass stream and auth token (for WhisperLive — no-op for browser provider)
+            if (stream) {
+              transcription.setMediaStream(stream);
+            }
+            const { supabase } = await import("@/lib/supabase/client");
+            const { data: { session } } = await supabase.auth.getSession();
+            if (session?.access_token) {
+              transcription.setAuthToken(session.access_token);
+            }
+
             if (transcriptionCallbackRef.current) {
               transcription.onTextChunk(transcriptionCallbackRef.current);
             }
@@ -545,15 +556,21 @@ function RecorderPageContent() {
         }
       }
 
-      // Restart browser transcription if available and user hasn't selected OpenAI
-      // Wait a moment to ensure previous stop is complete
+      // Restart transcription after resume
       await new Promise(resolve => setTimeout(resolve, 150));
-      
-      // Always use browser transcription for live display
-      // If OpenAI is selected, Whisper will replace it after upload for better accuracy
+
       if (transcription.isAvailable && !transcription.isActive) {
         try {
           console.log("[Recorder][Transcription] start requested (resume)");
+          // Re-pass stream/token in case provider was re-created
+          if (mediaStreamRef.current) {
+            transcription.setMediaStream(mediaStreamRef.current);
+          }
+          const { supabase } = await import("@/lib/supabase/client");
+          const { data: { session } } = await supabase.auth.getSession();
+          if (session?.access_token) {
+            transcription.setAuthToken(session.access_token);
+          }
           if (transcriptionCallbackRef.current) {
             transcription.onTextChunk(transcriptionCallbackRef.current);
           }
@@ -2049,8 +2066,42 @@ function RecorderPageContent() {
 }
 
 export default function RecorderPage() {
+  const { user } = useAuth();
+  const [preferWhisper, setPreferWhisper] = useState(false);
+
+  // Fetch settings at this level so we can pass preferWhisper to the provider
+  useEffect(() => {
+    const loadPreference = async () => {
+      if (!user) return;
+      try {
+        const { supabase } = await import("@/lib/supabase/client");
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session?.access_token) return;
+
+        const response = await fetch("/api/settings", {
+          headers: { Authorization: `Bearer ${session.access_token}` },
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          const method = data.settings?.transcription_method || "browser";
+          const hasKey = !!data.settings?.openai_api_key;
+          setPreferWhisper(method === "openai" && hasKey);
+        }
+      } catch (err) {
+        console.error("[RecorderPage] Error loading transcription preference:", err);
+      }
+    };
+
+    loadPreference();
+
+    const handleFocus = () => { loadPreference(); };
+    window.addEventListener("focus", handleFocus);
+    return () => { window.removeEventListener("focus", handleFocus); };
+  }, [user]);
+
   return (
-    <TranscriptionProviderComponent>
+    <TranscriptionProviderComponent preferWhisper={preferWhisper}>
       <RecorderPageContent />
     </TranscriptionProviderComponent>
   );

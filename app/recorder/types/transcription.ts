@@ -24,3 +24,15 @@ export interface TranscriptionProvider {
   getProviderName(): string;
 }
 
+/** Extended provider that accepts the recorder's MediaStream and auth token. */
+export interface StreamAwareTranscriptionProvider extends TranscriptionProvider {
+  setMediaStream(stream: MediaStream): void;
+  setAuthToken(token: string): void;
+}
+
+export function isStreamAwareProvider(
+  provider: TranscriptionProvider
+): provider is StreamAwareTranscriptionProvider {
+  return "setMediaStream" in provider && "setAuthToken" in provider;
+}
+
