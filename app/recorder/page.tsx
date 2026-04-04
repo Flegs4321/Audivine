@@ -1029,7 +1029,7 @@ function RecorderPageContent() {
 
   // Transcription health check: if we're recording and haven't received a chunk for a while,
   // the browser's SpeechRecognition may have stopped without a reliable onend. Force restart.
-  const TRANSCRIPT_STALE_MS = 60000; // 1 minute (was 2m; browser live caption often gaps sooner)
+  const TRANSCRIPT_STALE_MS = 30000; // 30s — Chrome Speech API stops often; detect quickly
   const HEALTH_CHECK_INTERVAL_MS = 15000; // Check every 15 seconds
   useEffect(() => {
     if (state !== "recording" || !transcription.isAvailable || !transcription.isActive) return;

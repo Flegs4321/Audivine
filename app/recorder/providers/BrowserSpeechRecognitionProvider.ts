@@ -15,6 +15,7 @@ interface SpeechRecognition extends EventTarget {
   onresult: ((event: SpeechRecognitionEvent) => void) | null;
   onerror: ((event: SpeechRecognitionErrorEvent) => void) | null;
   onend: (() => void) | null;
+  onspeechstart: (() => void) | null;
 }
 
 interface SpeechRecognitionEvent {
@@ -63,8 +64,10 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
   private isRunning: boolean = false;
   private noSpeechCount: number = 0;
   private onNoSpeechCallback: (() => void) | null = null;
+  private onSpeechResumedCallback: (() => void) | null = null;
   /** When true, skip processLocally (on-device requires language pack; fall back to cloud) */
   private useCloudFallback: boolean = false;
+  private restartAttempt: number = 0;
 
   constructor() {
     const SpeechRecognitionClass =
@@ -78,6 +81,10 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
 
   setOnNoSpeech(callback: (() => void) | null): void {
     this.onNoSpeechCallback = callback;
+  }
+
+  setOnSpeechResumed(callback: (() => void) | null): void {
+    this.onSpeechResumedCallback = callback;
   }
 
   /**
@@ -114,6 +121,17 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
     ) {
       (this.recognition as SpeechRecognition).processLocally = true;
     }
+
+    // Reset no-speech state when browser actually detects speech
+    this.recognition.onspeechstart = () => {
+      if (this.noSpeechCount > 0) {
+        console.log("[BrowserSpeechRecognition] speech detected — clearing no-speech state");
+        this.noSpeechCount = 0;
+        this.onSpeechResumedCallback?.();
+      }
+      // Reset restart attempt counter on successful speech — engine is healthy
+      this.restartAttempt = 0;
+    };
 
     this.recognition.onresult = (event) => {
       if (!this.textChunkCallback) {
@@ -205,40 +223,38 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
       console.log("[BrowserSpeechRecognition] onend", {
         isRunning: this.isRunning,
         hasCallback: !!this.textChunkCallback,
+        restartAttempt: this.restartAttempt,
       });
       if (this.isRunning && this.textChunkCallback) {
         const SpeechRecognitionClass =
           window.SpeechRecognition || window.webkitSpeechRecognition;
         if (!SpeechRecognitionClass) return;
 
-        const doRestart = (attempt: number, maxAttempts: number = 3) => {
-          const delay = 300 + attempt * 200;
-          setTimeout(() => {
-            if (!this.isRunning || !this.textChunkCallback) return;
-            try {
-              console.log("[BrowserSpeechRecognition] transcription restart (auto)", {
-                attempt: attempt + 1,
-                maxAttempts,
-              });
-              const savedCallback = this.textChunkCallback;
-              this.recognition = new SpeechRecognitionClass();
-              this.textChunkCallback = savedCallback;
-              this.resetStateForNewRecognitionInstance();
-              this.setupRecognition();
-              this.recognition!.start();
-              console.log("[BrowserSpeechRecognition] transcription restart (auto) — started");
-            } catch (error) {
-              console.warn(
-                `[BrowserSpeechRecognition] Auto-restart failed (attempt ${attempt + 1}/${maxAttempts}):`,
-                error
-              );
-              if (attempt + 1 < maxAttempts) {
-                doRestart(attempt + 1, maxAttempts);
-              }
-            }
-          }, delay);
-        };
-        doRestart(0);
+        // Chrome's SpeechRecognition stops by design (silence, network hiccup, internal limit).
+        // Always restart — no attempt cap. Backoff is capped at 2s to keep gaps short.
+        this.restartAttempt++;
+        const delay = Math.min(300 + this.restartAttempt * 200, 2000);
+        setTimeout(() => {
+          if (!this.isRunning || !this.textChunkCallback) return;
+          try {
+            console.log("[BrowserSpeechRecognition] transcription restart (auto)", {
+              attempt: this.restartAttempt,
+            });
+            const savedCallback = this.textChunkCallback;
+            this.recognition = new SpeechRecognitionClass();
+            this.textChunkCallback = savedCallback;
+            this.resetStateForNewRecognitionInstance();
+            this.setupRecognition();
+            this.recognition!.start();
+            console.log("[BrowserSpeechRecognition] transcription restart (auto) — started");
+          } catch (error) {
+            console.warn(
+              `[BrowserSpeechRecognition] Auto-restart failed (attempt ${this.restartAttempt}):`,
+              error
+            );
+            // onend will fire again from the failed instance, triggering another retry
+          }
+        }, delay);
       }
     };
   }
@@ -270,6 +286,7 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
 
     this.resetStateForNewRecognitionInstance();
     this.noSpeechCount = 0;
+    this.restartAttempt = 0;
     this.isRunning = true;
 
     try {

@@ -34,6 +34,7 @@ export function TranscriptionProviderComponent({ children }: { children: React.R
     const browserProvider = new BrowserSpeechRecognitionProvider();
     if (browserProvider.isAvailable()) {
       browserProvider.setOnNoSpeech(() => setNoSpeechDetected(true));
+      browserProvider.setOnSpeechResumed(() => setNoSpeechDetected(false));
       setProvider(browserProvider);
       return;
     }
@@ -50,12 +51,13 @@ export function TranscriptionProviderComponent({ children }: { children: React.R
       throw new Error("No transcription provider available");
     }
     setNoSpeechDetected(false);
-    console.log("[TranscriptionProvider] start()");
-    await provider.start();
-    setIsActive(true);
+    // Register callback BEFORE starting so early chunks are not lost
     if (stableWrapperRef.current) {
       provider.onTextChunk(stableWrapperRef.current);
     }
+    console.log("[TranscriptionProvider] start()");
+    await provider.start();
+    setIsActive(true);
   }, [provider]);
 
   const stop = useCallback(() => {
