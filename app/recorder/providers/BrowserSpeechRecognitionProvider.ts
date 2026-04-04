@@ -80,6 +80,18 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
     this.onNoSpeechCallback = callback;
   }
 
+  /**
+   * Each new `SpeechRecognition` instance starts a fresh result stream (indices from 0).
+   * If we replace the engine while keeping the same recording session, we must reset
+   * bookkeeping or `lastProcessedIndex` stays high and we skip every result until the
+   * new session's cumulative length catches up — looks like "dead" live transcript until
+   * pause/resume calls `start()` which resets state.
+   */
+  private resetStateForNewRecognitionInstance(): void {
+    this.lastProcessedIndex = 0;
+    this.sentFinalTexts.clear();
+  }
+
   private setupRecognition() {
     if (!this.recognition) return;
 
@@ -173,8 +185,8 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
         return;
       }
       
-      // "aborted" occurs when recognition is stopped/interrupted (e.g., when pausing recording)
-      if (errorType === "aborted") {
+      // "aborted" / "interrupted" when recognition is stopped or the tab loses focus briefly
+      if (errorType === "aborted" || errorType === "interrupted") {
         return;
       }
 
@@ -200,6 +212,7 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
           const savedCallback = this.textChunkCallback;
           this.recognition = new SpeechRecognitionClass();
           this.textChunkCallback = savedCallback;
+          this.resetStateForNewRecognitionInstance();
           this.setupRecognition();
           try {
             this.recognition.start();
@@ -236,6 +249,7 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
               const savedCallback = this.textChunkCallback;
               this.recognition = new SpeechRecognitionClass();
               this.textChunkCallback = savedCallback;
+              this.resetStateForNewRecognitionInstance();
               this.setupRecognition();
               this.recognition!.start();
               console.log(`[BrowserSpeechRecognition] Auto-restarted with fresh instance (attempt ${attempt + 1})`);
@@ -290,8 +304,7 @@ export class BrowserSpeechRecognitionProvider implements TranscriptionProvider {
 
     // Reset state for new recording session
     this.startTimeMs = Date.now();
-    this.lastProcessedIndex = 0;
-    this.sentFinalTexts.clear();
+    this.resetStateForNewRecognitionInstance();
     this.noSpeechCount = 0;
     this.isRunning = true;
 

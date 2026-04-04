@@ -986,10 +986,10 @@ function RecorderPageContent() {
     }
   }, [transcription.isAvailable, transcription.isActive, transcription.onTextChunk]);
 
-  // Transcription health check: if we're recording and haven't received a chunk in 2 minutes,
-  // the browser's SpeechRecognition likely stopped (onend sometimes doesn't fire). Force restart.
-  const TRANSCRIPT_STALE_MS = 120000; // 2 minutes
-  const HEALTH_CHECK_INTERVAL_MS = 30000; // Check every 30 seconds
+  // Transcription health check: if we're recording and haven't received a chunk for a while,
+  // the browser's SpeechRecognition may have stopped without a reliable onend. Force restart.
+  const TRANSCRIPT_STALE_MS = 60000; // 1 minute (was 2m; browser live caption often gaps sooner)
+  const HEALTH_CHECK_INTERVAL_MS = 15000; // Check every 15 seconds
   useEffect(() => {
     if (state !== "recording" || !transcription.isAvailable || !transcription.isActive) return;
     const id = setInterval(async () => {
