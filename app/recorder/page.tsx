@@ -1012,7 +1012,7 @@ function RecorderPageContent() {
     };
 
     chunkHandlerRef.current = handleChunk;
-    const forwarder = (chunk: TranscriptChunk) => {
+    const forwarder = (chunk: LiveRecognitionChunk) => {
       chunkHandlerRef.current?.(chunk);
     };
     transcriptionCallbackRef.current = forwarder;
