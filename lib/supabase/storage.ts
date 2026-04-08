@@ -17,6 +17,12 @@ export interface RecordingMetadata {
   }>;
   mimeType: string;
   fileSize: number; // in bytes
+  /** Display title (DB column `title`) */
+  title?: string;
+  /** When this row is a sermon-only extract, link to the full recording */
+  parentRecordingId?: string;
+  /** full = entire service; sermon_only = extracted sermon */
+  recordingRole?: "full" | "sermon_only";
 }
 
 export interface UploadResult {
@@ -48,13 +54,16 @@ export async function uploadRecording(
 
     // Generate unique filename with timestamp
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const extension = metadata.mimeType.includes("mpeg") || metadata.mimeType.includes("mp3")
-      ? "mp3"
-      : metadata.mimeType.includes("webm")
-      ? "webm"
-      : metadata.mimeType.includes("ogg")
-      ? "ogg"
-      : "mp4";
+    const extension =
+      metadata.mimeType.includes("mpeg") || metadata.mimeType.includes("mp3")
+        ? "mp3"
+        : metadata.mimeType.includes("wav") || metadata.mimeType.includes("wave")
+          ? "wav"
+          : metadata.mimeType.includes("webm")
+            ? "webm"
+            : metadata.mimeType.includes("ogg")
+              ? "ogg"
+              : "mp4";
     const filename = `${metadata.filename}-${timestamp}.${extension}`;
     const filePath = `recordings/${filename}`;
 
@@ -93,7 +102,7 @@ export async function uploadRecording(
     }
     
     // Store metadata in the database with user_id
-    const insertData: any = {
+    const insertData: Record<string, unknown> = {
       filename: metadata.filename,
       file_path: filePath,
       storage_url: publicUrl,
@@ -104,32 +113,64 @@ export async function uploadRecording(
       file_size: metadata.fileSize,
       user_id: user.id, // Always set user_id - required by RLS policy
     };
-    
+
+    if (metadata.title) insertData.title = metadata.title;
+    if (metadata.parentRecordingId) insertData.parent_recording_id = metadata.parentRecordingId;
+    if (metadata.recordingRole) insertData.recording_role = metadata.recordingRole;
+
     console.log("[uploadRecording] Inserting recording with user_id:", user.id);
-    
-    const { data: dbData, error: dbError } = await supabase
+
+    const stripLinkColumns = (row: Record<string, unknown>) => {
+      const next = { ...row };
+      delete next.parent_recording_id;
+      delete next.recording_role;
+      return next;
+    };
+
+    const describeDbError = (err: { message?: string; code?: string; details?: string; hint?: string }) => {
+      const parts = [err.message, err.code, err.details, err.hint].filter(Boolean);
+      return parts.length ? parts.join(" — ") : "Unknown database error";
+    };
+
+    let { data: dbData, error: dbError } = await supabase
       .from("recordings")
       .insert(insertData)
       .select()
       .single();
 
+    // Migration 018 adds parent_recording_id / recording_role; if not applied, retry without them.
+    if (
+      dbError &&
+      (insertData.recording_role != null || insertData.parent_recording_id != null)
+    ) {
+      console.warn(
+        "[uploadRecording] Retrying insert without parent_recording_id / recording_role (apply migration 018 for sermon extract linking)"
+      );
+      const retry = await supabase
+        .from("recordings")
+        .insert(stripLinkColumns(insertData))
+        .select()
+        .single();
+      dbData = retry.data;
+      dbError = retry.error;
+    }
+
     if (dbError) {
-      console.error("Database insert error:", {
-        message: dbError.message,
-        code: dbError.code,
-        details: dbError.details,
-        hint: dbError.hint,
-      });
-      
+      console.error(
+        "Database insert error:",
+        describeDbError(dbError),
+        JSON.stringify(dbError, ["message", "code", "details", "hint"])
+      );
+
       // Delete the uploaded file since database insert failed
       await supabase.storage.from("Audivine").remove([filePath]);
-      
+
       return {
         success: false,
-        error: `Failed to save recording: ${dbError.message}. Please check your database permissions.`,
+        error: `Failed to save recording: ${describeDbError(dbError)}. Check RLS policies and that the recordings table matches your migrations.`,
       };
     }
-    
+
     console.log("[uploadRecording] Successfully saved recording:", dbData?.id);
 
     return {

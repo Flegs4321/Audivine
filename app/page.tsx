@@ -43,10 +43,10 @@ export default function Home() {
   // Show loading state while checking authentication
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+      <div className="flex min-h-screen items-center justify-center bg-slate-50">
         <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
-          <p className="text-gray-600">Loading...</p>
+          <div className="mx-auto mb-4 h-10 w-10 animate-spin rounded-full border-2 border-slate-200 border-t-teal-600" />
+          <p className="text-sm text-slate-600">Loading…</p>
         </div>
       </div>
     );
@@ -58,28 +58,33 @@ export default function Home() {
   }
 
   return (
-    <div className="min-h-screen flex flex-col bg-gray-50">
+    <div className="flex min-h-screen flex-col bg-slate-50">
       <Header />
 
-      <div className="flex-1 flex items-center justify-center">
-        <div className="text-center">
-          <h2 className="text-4xl font-bold text-gray-900 mb-8">Welcome to Audivine</h2>
-          <div className="flex flex-col gap-4 items-center">
+      <main className="flex flex-1 items-center justify-center px-4 py-16 sm:py-24">
+        <div className="w-full max-w-lg border border-slate-200/80 bg-white p-10 shadow-card sm:rounded-2xl">
+          <h2 className="text-center text-3xl font-semibold tracking-tight text-slate-900">
+            Welcome to Audivine
+          </h2>
+          <p className="mt-2 text-center text-sm text-slate-600">
+            Record services and manage sermon audio in one place.
+          </p>
+          <div className="mt-10 flex flex-col gap-3">
             <Link
               href="/recorder"
-              className="inline-block px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+              className="inline-flex w-full items-center justify-center rounded-xl bg-teal-600 px-5 py-3 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-teal-700"
             >
-              Go to Recorder
+              Open recorder
             </Link>
             <Link
               href="/sermons"
-              className="inline-block px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
+              className="inline-flex w-full items-center justify-center rounded-xl border border-slate-200 bg-white px-5 py-3 text-sm font-medium text-slate-800 shadow-sm transition-colors hover:border-slate-300 hover:bg-slate-50"
             >
-              Go to Sermons Library
+              Sermons library
             </Link>
           </div>
         </div>
-      </div>
+      </main>
     </div>
   );
 }

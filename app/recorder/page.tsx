@@ -10,6 +10,11 @@ import {
   type AudivineSpeechDebugDetail,
 } from "./providers/BrowserSpeechRecognitionProvider";
 import type { TranscriptChunk } from "./types/transcription";
+import { extractSegmentWavFromBlob } from "@/lib/audio/extract-segment-wav";
+import {
+  formatRecordingDateTimeForFilename,
+  sanitizeFilenameBase,
+} from "@/lib/recording/recording-filename";
 import { uploadRecording } from "@/lib/supabase/storage";
 import { useAuth } from "../auth/context/AuthProvider";
 import Header from "../components/Header";
@@ -25,6 +30,19 @@ interface Segment {
 
 // Maximum number of transcript chunks to display (keep most recent)
 const MAX_DISPLAYED_TRANSCRIPT_CHUNKS = 100;
+
+function shiftTranscriptChunksForSermon<T extends { timestampMs: number }>(
+  chunks: T[],
+  sermonStartMs: number,
+  sermonEndMs: number
+): T[] {
+  return chunks
+    .filter((c) => c.timestampMs >= sermonStartMs && c.timestampMs <= sermonEndMs)
+    .map((c) => ({
+      ...c,
+      timestampMs: Math.max(0, c.timestampMs - sermonStartMs),
+    }));
+}
 
 function RecorderPageContent() {
   const router = useRouter();
@@ -191,7 +209,8 @@ function RecorderPageContent() {
   const segmentsRef = useRef<Segment[]>([]);
   const transcriptChunksRef = useRef<TranscriptChunk[]>([]);
   const elapsedTimeRef = useRef<number>(0);
-  const transcriptEndRef = useRef<HTMLDivElement | null>(null);
+  /** Scroll container for live transcript (newest lines pinned to top). */
+  const transcriptScrollRef = useRef<HTMLDivElement | null>(null);
   const currentSpeakerRef = useRef<string | null>(null); // Ref to track current speaker for transcript chunks
 
   const seenFinalTextsRef = useRef<Set<string>>(new Set());
@@ -504,8 +523,15 @@ function RecorderPageContent() {
               body: fd,
             });
             if (!res.ok) {
-              const err = await res.json().catch(() => ({}));
-              console.warn("[Recorder] live-whisper:", res.status, err);
+              const err = (await res.json().catch(() => ({}))) as {
+                error?: string;
+                message?: string;
+              };
+              if (res.status === 400 && err.error === "OpenAI not configured") {
+                setLiveSpeechHint(err.message ?? "Add your OpenAI API key in Settings for live slice captions.");
+              } else if (res.status >= 500) {
+                console.warn("[Recorder] live-whisper:", res.status, err);
+              }
               return;
             }
             const data = (await res.json()) as { text?: string; skipped?: boolean };
@@ -1109,8 +1135,9 @@ function RecorderPageContent() {
       });
 
       setTimeout(() => {
-        if (transcriptEndRef.current) {
-          transcriptEndRef.current.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        const el = transcriptScrollRef.current;
+        if (el) {
+          el.scrollTop = 0;
         }
       }, 100);
     };
@@ -1250,8 +1277,13 @@ function RecorderPageContent() {
       const shouldRunWhisperAfterUpload =
         currentTranscriptionMethod === "openai" || !hasMeaningfulBrowserTranscript;
 
+      const recordedAt = new Date();
+      const stamp = formatRecordingDateTimeForFilename(recordedAt);
+      const fullBase = sanitizeFilenameBase(`${stamp} Full recording`);
+
       const metadata = {
-        filename: "recording",
+        filename: fullBase,
+        title: fullBase,
         duration: finalElapsedTime,
         segments: finalSegments.map((s) => ({
           type: s.type,
@@ -1278,6 +1310,63 @@ function RecorderPageContent() {
         setUploadStatus("success");
         setUploadedUrl(result.url);
         console.log("[Recorder] Upload successful, recording ID:", result.recordingId);
+
+        const sermonSeg = finalSegments.find((s) => s.type === "Sermon");
+        if (sermonSeg) {
+          const sermonEndMs =
+            sermonSeg.endMs ?? Math.round(finalElapsedTime * 1000);
+          if (sermonEndMs > sermonSeg.startMs) {
+            const sermonWav = await extractSegmentWavFromBlob(
+              blob,
+              sermonSeg.startMs,
+              sermonSeg.endMs
+            );
+            if (sermonWav) {
+              const sermonDurationSec = (sermonEndMs - sermonSeg.startMs) / 1000;
+              const shiftedChunks = shiftTranscriptChunksForSermon(
+                finalTranscriptChunks.map((c) => ({
+                  text: c.text,
+                  timestampMs: c.timestampMs,
+                  isFinal: c.isFinal ?? true,
+                  speaker: c.speaker,
+                  speakerTag: c.speakerTag,
+                  ...(c.source ? { source: c.source } : {}),
+                })),
+                sermonSeg.startMs,
+                sermonEndMs
+              );
+              const sermonBase = sanitizeFilenameBase(`${stamp} Sermon`);
+              const sermonMeta = {
+                filename: sermonBase,
+                title: sermonBase,
+                recordingRole: "sermon_only" as const,
+                parentRecordingId: result.recordingId,
+                duration: Math.max(1, Math.round(sermonDurationSec)),
+                segments: [
+                  {
+                    type: "Sermon",
+                    startMs: 0,
+                    endMs: Math.round(sermonDurationSec * 1000),
+                  },
+                ],
+                transcriptChunks: shiftedChunks,
+                mimeType: "audio/wav",
+                fileSize: sermonWav.size,
+              };
+              const sermonUpload = await uploadRecording(sermonWav, sermonMeta);
+              if (!sermonUpload.success) {
+                console.error(
+                  "[Recorder] Sermon extract upload failed:",
+                  sermonUpload.error
+                );
+              }
+            } else {
+              console.warn(
+                "[Recorder] Could not extract sermon segment audio (decode failed?)"
+              );
+            }
+          }
+        }
         
         // OpenAI setting: always Whisper. Browser setting: Whisper only if live captions produced no text
         // (avoids "edit recording" showing only a speaker tag when Web Speech never ran).
@@ -1365,10 +1454,10 @@ function RecorderPageContent() {
   // Show loading state while checking authentication
   if (authLoading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+      <div className="flex min-h-screen items-center justify-center bg-slate-50">
         <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
-          <p className="text-gray-600">Loading...</p>
+          <div className="mx-auto mb-4 h-10 w-10 animate-spin rounded-full border-2 border-slate-200 border-t-teal-600" />
+          <p className="text-sm text-slate-600">Loading…</p>
         </div>
       </div>
     );
@@ -1380,30 +1469,37 @@ function RecorderPageContent() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
+    <div className="min-h-screen bg-slate-50">
       <Header />
 
-      <div className="p-6">
-        <div className="max-w-6xl mx-auto">
-          <h2 className="text-2xl font-bold text-gray-900 mb-8">Recording Studio</h2>
+      <div className="px-4 py-8 sm:px-6 lg:px-8">
+        <div className="mx-auto max-w-6xl">
+          <div className="mb-8">
+            <h2 className="text-2xl font-semibold tracking-tight text-slate-900">
+              Recording studio
+            </h2>
+            <p className="mt-1 text-sm text-slate-600">
+              Capture audio, tag segments, and follow the live transcript.
+            </p>
+          </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 gap-8 lg:grid-cols-3">
           {/* Main Control Panel */}
           <div className="lg:col-span-2 space-y-6">
             {/* Recording Controls */}
-            <div className="bg-white rounded-xl shadow-lg p-8">
+            <div className="rounded-2xl border border-slate-200/80 bg-white p-8 shadow-card">
               <div className="flex flex-col items-center space-y-6">
                 {/* Audio Device Selection */}
                 {(state === "idle" || state === "stopped") && (
                   <div className="w-full max-w-md">
                     <div className="flex items-center justify-between mb-2">
-                      <label htmlFor="audio-device" className="block text-sm font-medium text-gray-700">
+                      <label htmlFor="audio-device" className="block text-sm font-medium text-slate-700">
                         Audio Input Device:
                       </label>
                       <button
                         type="button"
                         onClick={() => enumerateAudioDevices(true)}
-                        className="text-xs px-3 py-1 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded border border-gray-300"
+                        className="text-xs px-3 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded border border-slate-300"
                         title="Refresh device list (useful after plugging in aux cable)"
                       >
                         🔄 Refresh
@@ -1415,7 +1511,7 @@ function RecorderPageContent() {
                           id="audio-device"
                           value={selectedDeviceId || ""}
                           onChange={(e) => setSelectedDeviceId(e.target.value)}
-                          className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 focus:ring-2 focus:ring-red-500 focus:border-red-500"
+                          className="w-full px-4 py-2 border border-slate-300 rounded-lg bg-white text-slate-900 focus:ring-2 focus:ring-red-500 focus:border-red-500"
                         >
                           {audioInputDevices.map((device, index) => (
                             <option key={device.deviceId} value={device.deviceId}>
@@ -1423,12 +1519,12 @@ function RecorderPageContent() {
                             </option>
                           ))}
                         </select>
-                        <p className="mt-1 text-xs text-gray-500">
+                        <p className="mt-1 text-xs text-slate-500">
                           Select the audio input device you want to record from (e.g., soundboard via aux cable)
                         </p>
                       </>
                     ) : (
-                      <div className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-gray-50 text-gray-500 text-sm">
+                      <div className="w-full px-4 py-2 border border-slate-300 rounded-lg bg-slate-50 text-slate-500 text-sm">
                         No audio input devices found. Click "Refresh" after connecting your device.
                       </div>
                     )}
@@ -1462,7 +1558,7 @@ function RecorderPageContent() {
                     )}
                     <button
                       onClick={handleEndRecording}
-                      className="px-8 py-6 bg-gray-800 text-white text-xl font-semibold rounded-full hover:bg-gray-900 transition-all transform hover:scale-105 shadow-lg"
+                      className="px-8 py-6 bg-slate-800 text-white text-xl font-semibold rounded-full hover:bg-slate-900 transition-all transform hover:scale-105 shadow-lg"
                     >
                       End Recording
                     </button>
@@ -1472,21 +1568,21 @@ function RecorderPageContent() {
                 {/* Timer Display */}
                 {(state === "recording" || state === "paused") && (
                   <div className="text-center">
-                    <div className="text-6xl font-mono font-bold text-gray-900 mb-2">
+                    <div className="text-6xl font-mono font-bold text-slate-900 mb-2">
                       {formatTime(elapsedTime)}
                     </div>
                     <div className="flex items-center justify-center space-x-2">
                       {state === "recording" ? (
                         <>
                           <span className="w-3 h-3 bg-red-600 rounded-full animate-pulse"></span>
-                          <span className="text-sm text-gray-600 uppercase tracking-wide">
+                          <span className="text-sm text-slate-600 uppercase tracking-wide">
                             Recording
                           </span>
                         </>
                       ) : (
                         <>
                           <span className="w-3 h-3 bg-yellow-600 rounded-full"></span>
-                          <span className="text-sm text-gray-600 uppercase tracking-wide">
+                          <span className="text-sm text-slate-600 uppercase tracking-wide">
                             Paused
                           </span>
                         </>
@@ -1497,10 +1593,10 @@ function RecorderPageContent() {
 
                 {/* Active Segment Label */}
                 {(state === "recording" || state === "paused") && activeSegment && (
-                  <div className="bg-blue-100 text-blue-800 px-6 py-3 rounded-lg font-semibold">
+                  <div className="bg-sky-100 text-slate-800 px-6 py-3 rounded-lg font-semibold">
                     Active: {activeSegment}
                     {currentSpeaker && (
-                      <span className="ml-3 text-blue-600">
+                      <span className="ml-3 text-teal-600">
                         • Current Speaker: <span className="font-bold">{currentSpeaker}</span>
                       </span>
                     )}
@@ -1518,14 +1614,14 @@ function RecorderPageContent() {
                           disabled={state === "paused"}
                           className={`px-6 py-3 rounded-lg font-medium transition-all ${
                             state === "paused"
-                              ? "bg-gray-300 text-gray-500 cursor-not-allowed"
+                              ? "bg-slate-300 text-slate-500 cursor-not-allowed"
                               : activeSegment === segment
-                              ? "bg-blue-600 text-white shadow-md"
-                              : "bg-gray-200 text-gray-700 hover:bg-gray-300"
+                              ? "bg-teal-600 text-white shadow-md"
+                              : "bg-slate-200 text-slate-700 hover:bg-slate-300"
                           }`}
-                          title={state === "paused" ? "Resume recording to change segments" : `Select ${segment === "Sermon" ? "Message" : segment} segment. ${segment === "Sermon" ? "Sharing ends here; tag the message speaker." : ""}`}
+                          title={state === "paused" ? "Resume recording to change segments" : `Select ${segment} segment. ${segment === "Sermon" ? "Sharing ends here; tag the sermon speaker." : ""}`}
                         >
-                          {segment === "Sermon" ? "Message" : segment}
+                          {segment}
                         </button>
                       ))}
                       {activeSegment !== null && (
@@ -1534,9 +1630,9 @@ function RecorderPageContent() {
                           onClick={handleEndCurrentSegment}
                           disabled={state === "paused"}
                           className="px-4 py-3 rounded-lg font-medium border-2 border-orange-500 text-orange-600 hover:bg-orange-50 disabled:opacity-50 disabled:cursor-not-allowed"
-                          title={`End ${activeSegment === "Sermon" ? "Message" : activeSegment} segment now`}
+                          title={`End ${activeSegment} segment now`}
                         >
-                          End {activeSegment === "Sermon" ? "Message" : activeSegment}
+                          End {activeSegment}
                         </button>
                       )}
                     </div>
@@ -1544,12 +1640,12 @@ function RecorderPageContent() {
                     {/* Member Dropdown for Sharing Time */}
                     {activeSegment === "Sharing" && (showMemberDropdown || keepDropdownOpen) && (
                       <div className="w-full max-w-md">
-                        <div className="bg-white border border-gray-300 rounded-lg shadow-lg p-4">
+                        <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
                           <div className="flex items-center justify-between mb-2">
-                            <label className="block text-sm font-medium text-gray-700">
+                            <label className="block text-sm font-medium text-slate-700">
                               Select Member Sharing:
                             </label>
-                            <label className="flex items-center text-xs text-gray-600 cursor-pointer">
+                            <label className="flex items-center text-xs text-slate-600 cursor-pointer">
                               <input
                                 type="checkbox"
                                 checked={keepDropdownOpen}
@@ -1560,13 +1656,13 @@ function RecorderPageContent() {
                             </label>
                           </div>
                           {loadingMembers ? (
-                            <div className="text-center py-4 text-gray-500">Loading members...</div>
+                            <div className="text-center py-4 text-slate-500">Loading members...</div>
                           ) : members.length === 0 ? (
-                            <div className="text-center py-4 text-gray-500">
+                            <div className="text-center py-4 text-slate-500">
                               <p className="mb-2">No speakers found.</p>
                               <a
                                 href="/settings"
-                                className="text-blue-600 hover:text-blue-800 underline text-sm"
+                                className="text-teal-600 hover:text-slate-800 underline text-sm"
                               >
                                 Add speakers in Settings
                               </a>
@@ -1592,7 +1688,7 @@ function RecorderPageContent() {
                                 {/* Recently Tagged Speakers - Quick Access */}
                                 {recentlyTaggedSpeakers.length > 0 && !memberSearchQuery && (
                                   <div className="mb-3">
-                                    <div className="text-xs font-semibold text-gray-600 mb-2">Recently Tagged (Quick Select):</div>
+                                    <div className="text-xs font-semibold text-slate-600 mb-2">Recently Tagged (Quick Select):</div>
                                     <div className="flex flex-wrap gap-2">
                                       {recentlyTaggedSpeakers.map((speakerName) => (
                                         <button
@@ -1605,7 +1701,7 @@ function RecorderPageContent() {
                                             e.stopPropagation();
                                             await handleMemberSelect(speakerName, true);
                                           }}
-                                          className="px-3 py-1.5 bg-blue-100 border border-blue-300 text-blue-700 rounded-lg hover:bg-blue-200 font-medium text-sm transition-colors"
+                                          className="px-3 py-1.5 bg-sky-100 border border-sky-200 text-slate-700 rounded-lg hover:bg-sky-200 font-medium text-sm transition-colors"
                                         >
                                           {speakerName}
                                         </button>
@@ -1619,11 +1715,11 @@ function RecorderPageContent() {
                                   placeholder="Search speakers..."
                                   value={memberSearchQuery}
                                   onChange={(e) => setMemberSearchQuery(e.target.value)}
-                                  className="w-full px-3 py-2 mb-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                                  className="w-full px-3 py-2 mb-3 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500/40 text-sm"
                                   aria-label="Search speakers"
                                 />
                                 {sorted.length === 0 ? (
-                                  <div className="text-center py-4 text-gray-500">
+                                  <div className="text-center py-4 text-slate-500">
                                     No speakers match "{memberSearchQuery}"
                                   </div>
                                 ) : (
@@ -1644,13 +1740,13 @@ function RecorderPageContent() {
                                           }}
                                           className={`w-full text-left px-4 py-2 rounded-lg transition-colors border ${
                                             isTagged
-                                              ? "bg-blue-100 border-blue-300 hover:bg-blue-200 font-semibold"
+                                              ? "bg-sky-100 border-sky-200 hover:bg-sky-200 font-semibold"
                                               : isRecent
                                               ? "bg-green-50 border-green-200 hover:bg-green-100"
-                                              : "bg-gray-50 border-gray-200 hover:bg-blue-50 hover:text-blue-700"
+                                              : "bg-slate-50 border-slate-200 hover:bg-sky-50 hover:text-slate-700"
                                           }`}
                                         >
-                                          {isTagged && <span className="text-blue-600 mr-2">⭐</span>}
+                                          {isTagged && <span className="text-teal-600 mr-2">⭐</span>}
                                           {isRecent && !isTagged && <span className="text-green-600 mr-2">🕐</span>}
                                           {member.name}
                                         </button>
@@ -1684,7 +1780,7 @@ function RecorderPageContent() {
                                     setShowMemberDropdown(false);
                                     setKeepDropdownOpen(false);
                                   }}
-                                  className="flex-1 px-4 py-2 bg-gray-500 text-white rounded-lg hover:bg-gray-600 text-sm font-medium"
+                                  className="flex-1 px-4 py-2 bg-slate-500 text-white rounded-lg hover:bg-slate-600 text-sm font-medium"
                                   title="No speaker at this time (e.g., moderator only)"
                                 >
                                   No Speaker
@@ -1698,14 +1794,14 @@ function RecorderPageContent() {
                                   setKeepDropdownOpen(false);
                                   setMemberSearchQuery("");
                                 }}
-                                className="flex-1 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 text-sm"
+                                className="flex-1 px-4 py-2 bg-slate-200 text-slate-700 rounded-lg hover:bg-slate-300 text-sm"
                               >
                                 Close
                               </button>
                               {!showMemberDropdown && keepDropdownOpen && (
                                 <button
                                   onClick={() => setShowMemberDropdown(true)}
-                                  className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium"
+                                  className="flex-1 px-4 py-2 bg-teal-600 text-white rounded-lg hover:bg-teal-700 text-sm font-medium"
                                 >
                                   Tag Next Speaker
                                 </button>
@@ -1720,7 +1816,7 @@ function RecorderPageContent() {
                     {activeSegment === "Sharing" && !showMemberDropdown && !keepDropdownOpen && (
                       <div className="flex flex-col gap-2 w-full max-w-lg mx-auto">
                         {!sharingHintDismissed && (
-                          <div className="flex items-start gap-2 p-3 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-800">
+                          <div className="flex items-start gap-2 p-3 bg-slate-50 border border-slate-200 rounded-lg text-sm text-slate-800">
                             <p className="flex-1">
                               Tap <strong>End Speaker</strong> when someone finishes, then <strong>Tag Speaker</strong> for the next person, to keep names correct.
                             </p>
@@ -1730,7 +1826,7 @@ function RecorderPageContent() {
                                 setSharingHintDismissed(true);
                                 if (typeof window !== "undefined") window.localStorage.setItem("recorder-sharing-hint-dismissed", "1");
                               }}
-                              className="shrink-0 px-2 py-1 text-blue-600 hover:bg-blue-100 rounded"
+                              className="shrink-0 px-2 py-1 text-teal-600 hover:bg-sky-100 rounded"
                               aria-label="Dismiss tip"
                             >
                               Dismiss
@@ -1760,27 +1856,27 @@ function RecorderPageContent() {
                             End Speaker
                           </button>
                         </div>
-                        <p className="text-xs text-center text-gray-500">
+                        <p className="text-xs text-center text-slate-500">
                           {currentSpeaker ? "Tap End Speaker when they finish, then Tag Speaker for the next person." : "Tag who is sharing; tap End Speaker when they finish."}
                         </p>
                       </div>
                     )}
 
-                    {/* Message Speaker: tag who is preaching so transcript and summary show "MESSAGE: [Name]" */}
+                    {/* Sermon speaker: tag who is preaching so transcript and summary show "MESSAGE: [Name]" */}
                     {activeSegment === "Sermon" && showSermonSpeakerDropdown && (
                       <div className="w-full max-w-md">
-                        <div className="bg-white border border-gray-300 rounded-lg shadow-lg p-4">
-                          <label className="block text-sm font-medium text-gray-700 mb-2">
-                            Select Message Speaker (Sharing ended; tag who is preaching):
+                        <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                          <label className="block text-sm font-medium text-slate-700 mb-2">
+                            Select Sermon Speaker (Sharing ended; tag who is preaching):
                           </label>
                           {loadingMembers ? (
-                            <div className="text-center py-4 text-gray-500">Loading speakers...</div>
+                            <div className="text-center py-4 text-slate-500">Loading speakers...</div>
                           ) : members.length === 0 ? (
-                            <div className="text-center py-4 text-gray-500">
+                            <div className="text-center py-4 text-slate-500">
                               <p className="mb-2">No speakers found.</p>
                               <a
                                 href="/settings"
-                                className="text-blue-600 hover:text-blue-800 underline text-sm"
+                                className="text-teal-600 hover:text-slate-800 underline text-sm"
                               >
                                 Add speakers in Settings
                               </a>
@@ -1808,11 +1904,11 @@ function RecorderPageContent() {
                                   placeholder="Search speakers..."
                                   value={sermonSpeakerSearchQuery}
                                   onChange={(e) => setSermonSpeakerSearchQuery(e.target.value)}
-                                  className="w-full px-3 py-2 mb-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                                  className="w-full px-3 py-2 mb-3 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500/40 text-sm"
                                   aria-label="Search sermon speakers"
                                 />
                                 {sorted.length === 0 ? (
-                                  <div className="text-center py-4 text-gray-500">
+                                  <div className="text-center py-4 text-slate-500">
                                     No speakers match "{sermonSpeakerSearchQuery}"
                                   </div>
                                 ) : (
@@ -1832,11 +1928,11 @@ function RecorderPageContent() {
                                           }}
                                           className={`w-full text-left px-4 py-2 rounded-lg transition-colors border ${
                                             isTagged
-                                              ? "bg-blue-100 border-blue-300 hover:bg-blue-200 font-semibold"
-                                              : "bg-gray-50 border-gray-200 hover:bg-blue-50 hover:text-blue-700"
+                                              ? "bg-sky-100 border-sky-200 hover:bg-sky-200 font-semibold"
+                                              : "bg-slate-50 border-slate-200 hover:bg-sky-50 hover:text-slate-700"
                                           }`}
                                         >
-                                          {isTagged && <span className="text-blue-600 mr-2">⭐</span>}
+                                          {isTagged && <span className="text-teal-600 mr-2">⭐</span>}
                                           {member.name}
                                         </button>
                                       );
@@ -1851,7 +1947,7 @@ function RecorderPageContent() {
                               setShowSermonSpeakerDropdown(false);
                               setSermonSpeakerSearchQuery("");
                             }}
-                            className="mt-3 w-full px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 text-sm"
+                            className="mt-3 w-full px-4 py-2 bg-slate-200 text-slate-700 rounded-lg hover:bg-slate-300 text-sm"
                           >
                             Cancel
                           </button>
@@ -1865,7 +1961,7 @@ function RecorderPageContent() {
 
             {/* Error Display */}
             {error && (
-              <div className="bg-red-50 border border-red-200 rounded-xl shadow-lg p-6">
+              <div className="rounded-2xl border border-red-200/80 bg-red-50/80 p-6 shadow-sm">
                 <div className="flex items-start space-x-3">
                   <span className="text-red-600 text-xl">⚠️</span>
                   <div className="flex-1">
@@ -1884,7 +1980,7 @@ function RecorderPageContent() {
 
             {/* Audio Playback Section */}
             {state === "stopped" && audioUrl && audioBlob && (
-              <div className="bg-green-50 border border-green-200 rounded-xl shadow-lg p-6">
+              <div className="rounded-2xl border border-emerald-200/80 bg-emerald-50/60 p-6 shadow-sm">
                 <div className="flex items-center space-x-2 mb-4">
                   <span className="text-green-600 text-xl">✓</span>
                   <h3 className="font-semibold text-green-900">Audio Ready</h3>
@@ -1909,11 +2005,11 @@ function RecorderPageContent() {
                   </audio>
                   <div className="flex items-center justify-between">
                     <div className="flex flex-col gap-1">
-                      <span className="text-sm text-gray-600">
+                      <span className="text-sm text-slate-600">
                         File size: {(audioBlob.size / 1024 / 1024).toFixed(2)} MB
                       </span>
                       {audioDuration !== null && (
-                        <span className="text-sm text-gray-600">
+                        <span className="text-sm text-slate-600">
                           Duration: {formatTime(Math.floor(audioDuration))}
                         </span>
                       )}
@@ -1921,7 +2017,7 @@ function RecorderPageContent() {
                     <a
                       href={audioUrl}
                       download={`recording-${new Date().toISOString().slice(0, 19).replace(/:/g, "-")}.mp3`}
-                      className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium"
+                      className="px-4 py-2 bg-teal-600 text-white rounded-lg hover:bg-teal-700 transition-colors text-sm font-medium"
                     >
                       Download Recording
                     </a>
@@ -1930,8 +2026,8 @@ function RecorderPageContent() {
                   {/* Supabase Upload Status */}
                   <div className="pt-4 border-t border-green-200">
                     {uploadStatus === "uploading" && (
-                      <div className="flex items-center space-x-2 text-sm text-gray-600">
-                        <div className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+                      <div className="flex items-center space-x-2 text-sm text-slate-600">
+                        <div className="w-4 h-4 border-2 border-teal-600 border-t-transparent rounded-full animate-spin"></div>
                         <span>Uploading to Supabase...</span>
                       </div>
                     )}
@@ -1945,7 +2041,7 @@ function RecorderPageContent() {
                           href={uploadedUrl}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="text-xs text-blue-600 hover:text-blue-800 underline break-all"
+                          className="text-xs text-teal-600 hover:text-slate-800 underline break-all"
                         >
                           {uploadedUrl}
                         </a>
@@ -1957,7 +2053,7 @@ function RecorderPageContent() {
                       </div>
                     )}
                     {uploadStatus === "idle" && (
-                      <div className="text-xs text-gray-500">
+                      <div className="text-xs text-slate-500">
                         Upload will start automatically...
                       </div>
                     )}
@@ -1970,11 +2066,11 @@ function RecorderPageContent() {
                     <button
                       onClick={handleAnalyzeSections}
                       disabled={uploadStatus === "uploading"}
-                      className="w-full px-8 py-4 bg-blue-600 text-white text-lg font-semibold rounded-lg hover:bg-blue-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg"
+                      className="w-full rounded-xl bg-teal-600 px-8 py-4 text-lg font-semibold text-white shadow-sm transition-all hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       {uploadStatus === "uploading" ? "Analyzing..." : "Analyze Sections Automatically"}
                     </button>
-                    <p className="mt-2 text-sm text-gray-600 text-center">
+                    <p className="mt-2 text-sm text-slate-600 text-center">
                       Automatically detect and label Announcements, Sharing, and Sermon sections
                     </p>
                   </div>
@@ -1984,22 +2080,22 @@ function RecorderPageContent() {
 
             {/* Segments Table */}
             {(segments.length > 0 || activeSegment !== null) && (
-              <div className="bg-white rounded-xl shadow-lg p-6">
-                <h2 className="text-xl font-semibold text-gray-900 mb-4">Segments</h2>
+              <div className="rounded-2xl border border-slate-200/80 bg-white p-6 shadow-sm">
+                <h2 className="text-xl font-semibold text-slate-900 mb-4">Segments</h2>
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead>
-                      <tr className="border-b border-gray-200">
-                        <th className="text-left py-3 px-4 font-semibold text-gray-700">
+                      <tr className="border-b border-slate-200">
+                        <th className="text-left py-3 px-4 font-semibold text-slate-700">
                           Type
                         </th>
-                        <th className="text-left py-3 px-4 font-semibold text-gray-700">
+                        <th className="text-left py-3 px-4 font-semibold text-slate-700">
                           Start Time
                         </th>
-                        <th className="text-left py-3 px-4 font-semibold text-gray-700">
+                        <th className="text-left py-3 px-4 font-semibold text-slate-700">
                           End Time
                         </th>
-                        <th className="text-left py-3 px-4 font-semibold text-gray-700">
+                        <th className="text-left py-3 px-4 font-semibold text-slate-700">
                           Duration
                         </th>
                       </tr>
@@ -2011,35 +2107,35 @@ function RecorderPageContent() {
                         return (
                           <tr
                             key={index}
-                            className="border-b border-gray-100 hover:bg-gray-50"
+                            className="border-b border-slate-100 hover:bg-slate-50"
                           >
-                            <td className="py-3 px-4 text-gray-900 font-medium">
+                            <td className="py-3 px-4 text-slate-900 font-medium">
                               {segment.type}
                             </td>
-                            <td className="py-3 px-4 text-gray-700 font-mono">
+                            <td className="py-3 px-4 text-slate-700 font-mono">
                               {formatTimeMs(segment.startMs)}
                             </td>
-                            <td className="py-3 px-4 text-gray-700 font-mono">
+                            <td className="py-3 px-4 text-slate-700 font-mono">
                               {segment.endMs !== null
                                 ? formatTimeMs(segment.endMs)
                                 : "-"}
                             </td>
-                            <td className="py-3 px-4 text-gray-700 font-mono">
+                            <td className="py-3 px-4 text-slate-700 font-mono">
                               {segment.endMs !== null ? formatTimeMs(duration) : "-"}
                             </td>
                           </tr>
                         );
                       })}
                       {activeSegment !== null && activeSegmentStartMs !== null && (
-                        <tr className="border-b border-gray-100 bg-blue-50">
-                          <td className="py-3 px-4 text-blue-900 font-medium">
+                        <tr className="border-b border-slate-100 bg-slate-50">
+                          <td className="py-3 px-4 text-slate-900 font-medium">
                             {activeSegment} <span className="text-xs">(active)</span>
                           </td>
-                          <td className="py-3 px-4 text-blue-700 font-mono">
+                          <td className="py-3 px-4 text-slate-700 font-mono">
                             {formatTimeMs(activeSegmentStartMs)}
                           </td>
-                          <td className="py-3 px-4 text-blue-600 font-mono">-</td>
-                          <td className="py-3 px-4 text-blue-600 font-mono">
+                          <td className="py-3 px-4 text-teal-600 font-mono">-</td>
+                          <td className="py-3 px-4 text-teal-600 font-mono">
                             {formatTimeMs(getCurrentElapsedMs() - activeSegmentStartMs)}
                           </td>
                         </tr>
@@ -2051,8 +2147,8 @@ function RecorderPageContent() {
             )}
 
             {/* State Indicator */}
-            <div className="bg-white rounded-xl shadow-lg p-6">
-              <div className="text-sm text-gray-600">
+            <div className="rounded-2xl border border-slate-200/80 bg-white p-6 shadow-sm">
+              <div className="text-sm text-slate-600">
                 Status: <span className="font-semibold capitalize">{state}</span>
               </div>
             </div>
@@ -2060,13 +2156,13 @@ function RecorderPageContent() {
 
           {/* Live Transcript Panel */}
           <div className="lg:col-span-1">
-            <div className="bg-white rounded-xl shadow-lg p-6 h-full">
-              <h2 className="text-xl font-semibold text-gray-900 mb-2">
+            <div className="flex h-full flex-col rounded-2xl border border-slate-200/80 bg-white p-6 shadow-sm">
+              <h2 className="text-xl font-semibold text-slate-900 mb-2">
                 Live Transcript
               </h2>
               <div className="mb-4">
-                <div className="text-xs text-gray-500">
-                  Method: <span className="font-medium text-gray-600">
+                <div className="text-xs text-slate-500">
+                  Method: <span className="font-medium text-slate-600">
                     {transcriptionMethod === "browser"
                       ? browserLiveWhisperFallback && hasConfiguredOpenAiKey
                         ? "Browser speech + OpenAI slices (fallback)"
@@ -2079,13 +2175,13 @@ function RecorderPageContent() {
                 {(state === "recording" || state === "paused") && (
                   <div className="mt-3 space-y-2">
                     {liveSpeechHint && (
-                      <div className="text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded p-2">
+                      <div className="rounded-md border border-stone-200 bg-stone-50 p-2 text-xs text-stone-800">
                         <span className="font-semibold">Captions: </span>
                         {liveSpeechHint}
                       </div>
                     )}
                     {transcriptionMethod === "openai" && hasConfiguredOpenAiKey && (
-                      <p className="text-[11px] text-gray-600">
+                      <p className="text-[11px] text-slate-600">
                         Live text is updated about every 5 seconds via your OpenAI key (short audio slices). Expect a short delay compared to true streaming.
                       </p>
                     )}
@@ -2095,15 +2191,15 @@ function RecorderPageContent() {
                           <button
                             type="button"
                             onClick={() => void restartLiveTranscription("button: Restart live captions")}
-                            className="text-xs font-medium text-blue-700 hover:text-blue-900 underline"
+                            className="text-xs font-medium text-slate-700 hover:text-slate-900 underline"
                           >
                             Restart live captions
                           </button>
-                          <p className="text-[11px] text-gray-500">
+                          <p className="text-[11px] text-slate-500">
                             Uses this click to re-bind speech (helps when Chrome/Edge block background starts).
                           </p>
-                          <details className="text-[11px] text-gray-600">
-                            <summary className="cursor-pointer font-medium text-gray-700">
+                          <details className="text-[11px] text-slate-600">
+                            <summary className="cursor-pointer font-medium text-slate-700">
                               If nothing appears live (Chrome &amp; Edge both use the same engine)
                             </summary>
                             <ul className="list-disc pl-4 mt-1 space-y-1">
@@ -2119,9 +2215,12 @@ function RecorderPageContent() {
                   </div>
                 )}
               </div>
-              <div className="h-[600px] overflow-y-auto border border-gray-200 rounded-lg p-4 bg-gray-50">
+              <div
+                ref={transcriptScrollRef}
+                className="h-[600px] overflow-y-auto rounded-xl border border-slate-200/80 bg-slate-50/90 p-4"
+              >
                 {transcriptionMethod === "openai" && transcriptChunks.length > 0 && (
-                  <div className="mb-3 p-2 bg-blue-50 border border-blue-200 rounded text-xs text-blue-700">
+                  <div className="mb-3 p-2 bg-slate-50 border border-slate-200 rounded text-xs text-slate-700">
                     <strong>Live transcription:</strong>{" "}
                     {hasConfiguredOpenAiKey
                       ? "Short OpenAI Whisper slices while recording. A full-file pass after upload may refine wording and timing."
@@ -2129,7 +2228,7 @@ function RecorderPageContent() {
                   </div>
                 )}
                 {!isSecureContext && transcription.isAvailable ? (
-                  <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg text-amber-800 text-sm">
+                  <div className="rounded-xl border border-stone-200 bg-stone-50 p-4 text-sm text-stone-800">
                     <p className="font-medium mb-1">Live transcript unavailable</p>
                     <p className="text-xs">
                       Speech recognition requires a secure connection (HTTPS). Open this site using your https:// URL so the live transcript can work.
@@ -2137,66 +2236,72 @@ function RecorderPageContent() {
                   </div>
                 ) : !transcription.isAvailable &&
                   !(hasConfiguredOpenAiKey && transcriptionMethod === "openai") ? (
-                  <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg text-amber-800 text-sm">
+                  <div className="rounded-xl border border-stone-200 bg-stone-50 p-4 text-sm text-stone-800">
                     <p className="font-medium mb-1">Live transcript not available</p>
                     <p className="text-xs mb-2">
                       Browser Speech Recognition is not supported in this browser. For live captions while recording, set{" "}
                       <strong>OpenAI</strong> in Settings, add your API key, and choose OpenAI as the transcription method — we transcribe ~5s audio slices during recording.
                     </p>
-                    <p className="text-xs text-amber-700">
+                    <p className="text-xs text-stone-600">
                       Or use <strong>Microsoft Edge</strong> or <strong>Google Chrome</strong> with browser speech (Chrome 139+ recommended).
                     </p>
                   </div>
                 ) : transcriptChunks.length === 0 && transcription.noSpeechDetected ? (
-                  <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg text-amber-800 text-sm">
+                  <div className="rounded-xl border border-stone-200 bg-stone-50 p-4 text-sm text-stone-800">
                     <p className="font-medium mb-1">No live captions yet</p>
                     <p className="text-xs mb-2">
                       The speech service reported “no speech” before any text arrived (this can happen even when the mic works). Keep speaking; captions should appear once recognition starts. Use Chrome or Edge on a stable connection. If Settings uses OpenAI, you’ll still get a full transcript after upload.
                     </p>
                   </div>
                 ) : transcriptChunks.length === 0 ? (
-                  <div className="text-center text-gray-400 mt-8">
-                    Transcript will appear here while recording...
+                  <div className="text-center text-slate-400 mt-8">
+                    <p>Transcript will appear here while recording.</p>
+                    <p className="mt-2 text-xs text-slate-500">Latest lines show at the top so you don’t need to scroll up.</p>
                   </div>
                 ) : (
-                  <div className="space-y-3">
+                  <div className="flex flex-col space-y-3">
                     {(() => {
                       const displayed = transcriptChunks.slice(-MAX_DISPLAYED_TRANSCRIPT_CHUNKS);
-                      return displayed.map((chunk, index) => {
+                      // Newest at top so the latest line stays visible without scrolling up during recording
+                      const displayedNewestFirst = [...displayed].reverse();
+                      return displayedNewestFirst.map((chunk, i) => {
                         if (!chunk || typeof chunk.text !== "string") return null;
                         const isSpeakerTag = chunk.speakerTag === true;
                         const isSermonTag = isSpeakerTag && (chunk.text.includes(" speaking:") || chunk.text.includes(" speaking:]") || chunk.text.includes(" sermon speaker:"));
-                        const isSharingTag = isSpeakerTag && (chunk.text.includes(" sharing:") || chunk.text.includes(" sharing:]"));
-                        const isLastChunk = index === displayed.length - 1;
+                        const isNewestChunk = i === 0;
                         const hasSpeaker = chunk.speaker && !isSpeakerTag;
-                        // Show speaker name only once per speaker: when speaker changes or when first line after a speaker tag
-                        const prevChunk = index > 0 ? displayed[index - 1] : null;
-                        const showSpeakerLabel = hasSpeaker && (index === 0 || prevChunk?.speakerTag === true || prevChunk?.speaker !== chunk.speaker);
+                        // Chronological predecessor (older line) is the next item down in this list
+                        const olderChunk =
+                          i < displayedNewestFirst.length - 1 ? displayedNewestFirst[i + 1] : null;
+                        const showSpeakerLabel = hasSpeaker && (
+                          i === displayedNewestFirst.length - 1 ||
+                          olderChunk?.speakerTag === true ||
+                          olderChunk?.speaker !== chunk.speaker
+                        );
 
                         return (
                           <div
-                            key={index}
-                            ref={isLastChunk ? transcriptEndRef : null}
-                            className={`text-sm leading-relaxed animate-fade-in ${
+                            key={`${displayed.length - 1 - i}-${chunk.timestampMs}`}
+                            className={`text-sm leading-relaxed ${isNewestChunk ? "animate-fade-in" : ""} ${
                               isSpeakerTag
                                 ? isSermonTag
                                   ? "bg-purple-100 border-l-4 border-purple-500 pl-3 py-2 rounded shadow-sm"
-                                  : "bg-blue-100 border-l-4 border-blue-500 pl-3 py-2 rounded shadow-sm"
+                                  : "bg-sky-100 border-l-4 border-sky-500 pl-3 py-2 rounded shadow-sm"
                                 : hasSpeaker
                                 ? "bg-green-50 border-l-2 border-green-300 pl-2 py-1"
                                 : chunk.isFinal
-                                ? "text-gray-700"
-                                : "text-gray-500 italic"
+                                ? "text-slate-700"
+                                : "text-slate-500 italic"
                             }`}
                           >
                             <div className={`text-xs mb-1 font-mono ${
                               isSpeakerTag 
                                 ? isSermonTag 
                                   ? "text-purple-700 font-semibold" 
-                                  : "text-blue-700 font-semibold" 
+                                  : "text-slate-700 font-semibold" 
                                 : hasSpeaker
                                 ? "text-green-700 font-semibold"
-                                : "text-gray-400"
+                                : "text-slate-400"
                             }`}>
                               {formatTimeMs(chunk.timestampMs)}
                               {showSpeakerLabel && (
@@ -2212,9 +2317,9 @@ function RecorderPageContent() {
                               isSpeakerTag 
                                 ? isSermonTag
                                   ? "text-purple-900 font-semibold"
-                                  : "text-blue-900 font-semibold" 
+                                  : "text-slate-900 font-semibold" 
                                 : hasSpeaker
-                                ? "text-gray-800"
+                                ? "text-slate-800"
                                 : ""
                             }`}>
                               {chunk.text}

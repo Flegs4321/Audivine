@@ -28,29 +28,28 @@ export async function getUserOpenAISettings(
   }
 
   try {
-    // Fetch user settings using PostgREST API
-    const fetchUrl = `${supabaseUrl}/rest/v1/user_settings?user_id=eq.${userId}&select=openai_api_key,openai_model,openai_prompt`;
-    const fetchResponse = await fetch(fetchUrl, {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${authToken}`,
-        apikey: supabaseAnonKey,
-        "Content-Type": "application/json",
-      },
+    const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+      auth: { persistSession: false, autoRefreshToken: false },
+      global: { headers: { Authorization: `Bearer ${authToken}` } },
     });
 
-    if (fetchResponse.ok) {
-      const settings = await fetchResponse.json();
-      const userSettings = Array.isArray(settings) && settings.length > 0 ? settings[0] : null;
+    const { data: userSettings, error } = await supabase
+      .from("user_settings")
+      .select("*")
+      .eq("user_id", userId)
+      .maybeSingle();
 
-      // Only return settings if user has configured their own API key
-      if (userSettings?.openai_api_key) {
-        return {
-          apiKey: userSettings.openai_api_key,
-          model: userSettings.openai_model || "gpt-4o-mini",
-          prompt: userSettings.openai_prompt || null,
-        };
-      }
+    if (error) {
+      console.error("[getUserOpenAISettings]", error.message);
+      return null;
+    }
+
+    if (userSettings?.openai_api_key && String(userSettings.openai_api_key).trim().length > 0) {
+      return {
+        apiKey: String(userSettings.openai_api_key).trim(),
+        model: userSettings.openai_model || "gpt-4o-mini",
+        prompt: userSettings.openai_prompt || null,
+      };
     }
   } catch (error) {
     console.error("Error fetching user OpenAI settings:", error);

@@ -5,7 +5,8 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { createSummarizationProvider } from "@/lib/summarizer/summarize";
+import { createSummarizationProviderFromGenSettings } from "@/lib/summarizer/summarize";
+import { getUserSummaryGenerationSettings } from "@/lib/ai/summary-generation-settings";
 import { getUserOpenAISettings } from "@/lib/openai/user-settings";
 
 export const runtime = "nodejs";
@@ -53,14 +54,30 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Get user's OpenAI settings (does NOT fall back to env vars)
-    const userOpenAISettings = await getUserOpenAISettings(user.id, token);
+    let genSettings = await getUserSummaryGenerationSettings(user.id, token, supabase);
 
-    if (!userOpenAISettings || !userOpenAISettings.apiKey) {
+    if (!genSettings) {
+      const openaiOnly = await getUserOpenAISettings(user.id, token);
+      if (openaiOnly?.apiKey) {
+        genSettings = {
+          provider: "openai",
+          prompt: openaiOnly.prompt ?? null,
+          openai: {
+            apiKey: openaiOnly.apiKey,
+            model: openaiOnly.model,
+          },
+        };
+      }
+    }
+
+    const summarizer = genSettings ? createSummarizationProviderFromGenSettings(genSettings) : null;
+
+    if (!summarizer) {
       return NextResponse.json(
-        { 
-          error: "OpenAI API key not configured", 
-          message: "Please configure your OpenAI API key in Settings to generate summaries. Without your own API key, this feature is not available." 
+        {
+          error: "API key not configured",
+          message:
+            "Add an Anthropic (Claude) API key or an OpenAI API key in Settings to generate section summaries.",
         },
         { status: 400 }
       );
@@ -83,11 +100,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const summarizer = createSummarizationProvider({
-      apiKey: userOpenAISettings.apiKey,
-      model: userOpenAISettings.model,
-      prompt: userOpenAISettings.prompt,
-    });
     const result = await summarizer.summarize(text, label);
 
     return NextResponse.json(result);

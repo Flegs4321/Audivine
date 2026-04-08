@@ -13,6 +13,16 @@ export const runtime = "nodejs";
 const MIN_BYTES = 1800;
 const MAX_BYTES = 12 * 1024 * 1024;
 
+/** Node/Next FormData often returns `File` objects where `instanceof Blob` is false; duck-type instead. */
+function isBlobLike(v: unknown): v is Blob {
+  return (
+    typeof v === "object" &&
+    v !== null &&
+    typeof (v as Blob).arrayBuffer === "function" &&
+    typeof (v as Blob).size === "number"
+  );
+}
+
 export async function POST(request: NextRequest) {
   try {
     const authHeader = request.headers.get("authorization");
@@ -65,7 +75,7 @@ export async function POST(request: NextRequest) {
 
     const form = await request.formData();
     const file = form.get("file");
-    if (!(file instanceof Blob)) {
+    if (!isBlobLike(file)) {
       return NextResponse.json(
         { error: "Bad request", message: "Expected multipart field \"file\"" },
         { status: 400 }
@@ -97,6 +107,15 @@ export async function POST(request: NextRequest) {
 
     if (!openaiRes.ok) {
       const errText = await openaiRes.text();
+      // Timeslice WebM chunks are often rejected by Whisper (invalid/incomplete container). Don't 400-loop the client.
+      if (openaiRes.status === 400) {
+        console.warn("[live-whisper] OpenAI rejected slice (common for short WebM fragments):", errText.slice(0, 200));
+        return NextResponse.json({
+          text: "",
+          skipped: true,
+          reason: "openai_rejected_slice",
+        });
+      }
       return NextResponse.json(
         { error: "Transcription failed", message: errText || openaiRes.statusText },
         { status: openaiRes.status >= 500 ? 502 : 400 }

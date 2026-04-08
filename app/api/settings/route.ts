@@ -112,7 +112,12 @@ export async function GET(request: NextRequest) {
       console.log("[SETTINGS] Masking API key, original length:", key.length);
       maskedSettings.openai_api_key = key.substring(0, 7) + "..." + key.substring(key.length - 4);
     }
-    
+    if (maskedSettings.anthropic_api_key) {
+      const key = maskedSettings.anthropic_api_key;
+      maskedSettings.anthropic_api_key =
+        key.substring(0, Math.min(12, key.length)) + "..." + key.substring(key.length - 4);
+    }
+
     return NextResponse.json({ settings: maskedSettings });
   } catch (error) {
     console.error("Get settings API error:", error);
@@ -170,7 +175,16 @@ export async function PUT(request: NextRequest) {
     }
     
     const body = await request.json();
-    const { church_logo_url, church_name, openai_api_key, openai_model, transcription_method, openai_prompt } = body;
+    const {
+      church_logo_url,
+      church_name,
+      openai_api_key,
+      openai_model,
+      transcription_method,
+      openai_prompt,
+      anthropic_api_key,
+      claude_model,
+    } = body;
     
     // CRITICAL: Always set user_id to the authenticated user's ID
     // This ensures settings are always user-specific and prevents any tampering
@@ -183,6 +197,14 @@ export async function PUT(request: NextRequest) {
       // Log for debugging (don't log the full key, just length and prefix)
       console.log("[SETTINGS] Saving API key, length:", openai_api_key.length, "starts with:", openai_api_key.substring(0, 7));
       updateData.openai_api_key = openai_api_key;
+    }
+    if (anthropic_api_key !== undefined && anthropic_api_key && !String(anthropic_api_key).includes("...")) {
+      updateData.anthropic_api_key = String(anthropic_api_key).trim();
+    }
+    if (claude_model !== undefined) {
+      updateData.claude_model = claude_model && String(claude_model).trim().length > 0
+        ? String(claude_model).trim().substring(0, 120)
+        : null;
     }
     if (openai_model !== undefined) updateData.openai_model = openai_model;
     if (transcription_method !== undefined) updateData.transcription_method = transcription_method;
@@ -250,6 +272,12 @@ export async function PUT(request: NextRequest) {
             migrationMessage = "The transcription_method column does not exist. Please apply the migration: supabase/migrations/012_add_transcription_method.sql";
           } else if (errorText.includes("openai_api_key") || errorText.includes("openai_model")) {
             migrationMessage = "The OpenAI settings columns do not exist. Please apply the migration: supabase/migrations/011_add_openai_settings.sql";
+          } else if (
+            errorText.includes("anthropic_api_key") ||
+            errorText.includes("claude_model")
+          ) {
+            migrationMessage =
+              "The Claude (Anthropic) columns are missing. In the Supabase SQL Editor, run supabase/migrations/017_add_anthropic_settings.sql (adds anthropic_api_key and claude_model to user_settings). Then wait a few seconds for the schema cache to refresh.";
           }
           
           return NextResponse.json(
@@ -304,6 +332,12 @@ export async function PUT(request: NextRequest) {
             migrationMessage = "The transcription_method column does not exist. Please apply the migration: supabase/migrations/012_add_transcription_method.sql";
           } else if (errorText.includes("openai_api_key") || errorText.includes("openai_model")) {
             migrationMessage = "The OpenAI settings columns do not exist. Please apply the migration: supabase/migrations/011_add_openai_settings.sql";
+          } else if (
+            errorText.includes("anthropic_api_key") ||
+            errorText.includes("claude_model")
+          ) {
+            migrationMessage =
+              "The Claude (Anthropic) columns are missing. In the Supabase SQL Editor, run supabase/migrations/017_add_anthropic_settings.sql (adds anthropic_api_key and claude_model to user_settings). Then wait a few seconds for the schema cache to refresh.";
           }
           
           return NextResponse.json(

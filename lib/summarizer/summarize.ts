@@ -3,7 +3,19 @@
  * Abstracted to allow swapping providers
  */
 
+import type { SummaryGenerationSettings } from "@/lib/ai/summary-generation-settings";
 import type { SectionSummary, SummarizationProvider } from "./types";
+
+function parseJsonSectionSummary(content: string, isSermon: boolean): SectionSummary {
+  let raw = content.trim();
+  const fence = raw.match(/^```(?:json)?\s*([\s\S]*?)```$/m);
+  if (fence) raw = fence[1].trim();
+  const parsed = JSON.parse(raw);
+  return {
+    summary: parsed.summary || "Summary not available.",
+    bullets: parsed.bullets || (isSermon ? [] : undefined),
+  };
+}
 
 /**
  * OpenAI-based summarization provider
@@ -96,13 +108,95 @@ Return JSON: {"summary": "2-4 sentence summary"}`;
         throw new Error("No response content from OpenAI");
       }
 
-      const parsed = JSON.parse(content);
-      return {
-        summary: parsed.summary || "Summary not available.",
-        bullets: parsed.bullets || (isSermon ? [] : undefined),
-      };
+      return parseJsonSectionSummary(content, isSermon);
     } catch (error) {
       console.error("Summarization error:", error);
+      return {
+        summary: "Summary generation failed. Please review the transcript manually.",
+        bullets: isSermon ? [] : undefined,
+      };
+    }
+  }
+}
+
+/**
+ * Anthropic Claude — same JSON contract as OpenAI path (member/section summaries).
+ */
+export class AnthropicSummarizationProvider implements SummarizationProvider {
+  private apiKey: string;
+  private model: string;
+  private customPrompt?: string | null;
+
+  constructor(options: { apiKey: string; model?: string; customPrompt?: string | null }) {
+    this.apiKey = options.apiKey;
+    this.model = options.model || "claude-sonnet-4-20250514";
+    this.customPrompt = options.customPrompt;
+  }
+
+  async summarize(
+    text: string,
+    label: "Announcements" | "Sharing" | "Sermon" | "Other"
+  ): Promise<SectionSummary> {
+    const isSermon = label === "Sermon";
+
+    let prompt: string;
+    if (this.customPrompt && this.customPrompt.trim().length > 0) {
+      prompt = `${this.customPrompt.trim()}\n\nReturn JSON: {"summary": "summary text"${isSermon ? ', "bullets": ["bullet 1", "bullet 2", ...]' : ''}}\n\nTranscript:\n${text.substring(0, 8000)}`;
+    } else {
+      let basePrompt = isSermon
+        ? `Summarize this ${label.toLowerCase()} section from a church service transcript. Provide:
+1. A concise summary paragraph (2-4 sentences) capturing the main message
+2. 5-10 bullet points highlighting key points, scriptures, and takeaways
+
+Return JSON: {"summary": "2-4 sentence summary", "bullets": ["bullet 1", "bullet 2", ...]}`
+        : label === "Other"
+          ? `Summarize this section from a church service transcript in 2-4 sentences. Capture the key information, events, or points shared. This section may contain various types of content.
+
+Return JSON: {"summary": "2-4 sentence summary"}`
+          : `Summarize this ${label.toLowerCase()} section from a church service transcript in 2-4 sentences. Capture the key information, events, or points shared.
+
+Return JSON: {"summary": "2-4 sentence summary"}`;
+
+      prompt = `${basePrompt}\n\nTranscript:\n${text.substring(0, 8000)}`;
+    }
+
+    const systemMessage =
+      this.customPrompt && this.customPrompt.trim().length > 0
+        ? "You are a helpful assistant. Follow the user's instructions exactly. Always return valid JSON only, no markdown fences."
+        : "You are a helpful assistant that summarizes church service content. Always return valid JSON only, no markdown fences.";
+
+    try {
+      const response = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": this.apiKey,
+          "anthropic-version": "2023-06-01",
+        },
+        body: JSON.stringify({
+          model: this.model,
+          max_tokens: 2048,
+          system: systemMessage,
+          messages: [{ role: "user", content: prompt }],
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Anthropic API error: ${response.statusText}`);
+      }
+
+      const data = (await response.json()) as {
+        content?: Array<{ type: string; text?: string }>;
+      };
+      const block = data.content?.find((c) => c.type === "text");
+      const content = block?.text;
+      if (!content) {
+        throw new Error("No response content from Anthropic");
+      }
+
+      return parseJsonSectionSummary(content, isSermon);
+    } catch (error) {
+      console.error("Anthropic summarization error:", error);
       return {
         summary: "Summary generation failed. Please review the transcript manually.",
         bullets: isSermon ? [] : undefined,
@@ -154,5 +248,27 @@ export function createSummarizationProvider(userSettings?: { apiKey?: string; mo
 
   console.warn("No OPENAI_API_KEY found, using mock summarizer");
   return new MockSummarizationProvider();
+}
+
+/** Uses Claude when Anthropic key is set, otherwise OpenAI (same as member summary pipeline). */
+export function createSummarizationProviderFromGenSettings(
+  settings: SummaryGenerationSettings
+): SummarizationProvider | null {
+  const customPrompt = settings.prompt;
+  if (settings.provider === "anthropic" && settings.anthropic) {
+    return new AnthropicSummarizationProvider({
+      apiKey: settings.anthropic.apiKey,
+      model: settings.anthropic.model,
+      customPrompt,
+    });
+  }
+  if (settings.provider === "openai" && settings.openai) {
+    return new OpenAISummarizationProvider({
+      apiKey: settings.openai.apiKey,
+      model: settings.openai.model,
+      customPrompt,
+    });
+  }
+  return null;
 }
 

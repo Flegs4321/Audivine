@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { useAuth } from "../auth/context/AuthProvider";
 
 interface UserSettings {
@@ -9,31 +10,42 @@ interface UserSettings {
   church_name?: string | null;
 }
 
+const navInactive =
+  "rounded-lg border border-transparent px-3 py-2 text-sm font-semibold text-slate-600 transition-colors hover:bg-slate-100 hover:text-slate-900";
+const navActive =
+  "rounded-lg border border-teal-600 bg-teal-600 px-3 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-teal-700";
+
+function navClass(pathname: string, href: string): string {
+  const isHome = href === "/";
+  const active = isHome
+    ? pathname === "/" || pathname === ""
+    : pathname === href || pathname.startsWith(`${href}/`);
+  return active ? navActive : navInactive;
+}
+
 export default function Header() {
+  const pathname = usePathname() || "/";
   const { user, signOut, loading: authLoading } = useAuth();
   const [settings, setSettings] = useState<UserSettings>({});
-  const [loadingSettings, setLoadingSettings] = useState(true);
   const [logoKey, setLogoKey] = useState(0);
 
   useEffect(() => {
     if (user) {
       loadSettings();
-      
-      // Reload settings when window gains focus (e.g., after returning from settings page)
+
       const handleFocus = () => {
         loadSettings();
       };
-      
-      // Also reload when page becomes visible (handles tab switching)
+
       const handleVisibilityChange = () => {
         if (!document.hidden) {
           loadSettings();
         }
       };
-      
+
       window.addEventListener("focus", handleFocus);
       document.addEventListener("visibilitychange", handleVisibilityChange);
-      
+
       return () => {
         window.removeEventListener("focus", handleFocus);
         document.removeEventListener("visibilitychange", handleVisibilityChange);
@@ -43,18 +55,18 @@ export default function Header() {
 
   const loadSettings = async () => {
     try {
-      setLoadingSettings(true);
       const { supabase } = await import("@/lib/supabase/client");
-      const { data: { session } } = await supabase.auth.getSession();
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
 
       if (!session?.access_token) {
-        setLoadingSettings(false);
         return;
       }
 
       const response = await fetch("/api/settings", {
         headers: {
-          "Authorization": `Bearer ${session.access_token}`,
+          Authorization: `Bearer ${session.access_token}`,
         },
       });
 
@@ -63,19 +75,16 @@ export default function Header() {
         if (data.settings) {
           const newLogoUrl = data.settings.church_logo_url;
           const oldLogoUrl = settings.church_logo_url;
-          
-          // Update logo key to force image reload if URL changed
+
           if (newLogoUrl && newLogoUrl !== oldLogoUrl) {
-            setLogoKey(prev => prev + 1);
+            setLogoKey((prev) => prev + 1);
           }
-          
+
           setSettings(data.settings);
         }
       }
     } catch (error) {
       console.error("Error loading settings:", error);
-    } finally {
-      setLoadingSettings(false);
     }
   };
 
@@ -84,69 +93,79 @@ export default function Header() {
   }
 
   return (
-    <header className="bg-white border-b border-gray-200 shadow-sm sticky top-0 z-50">
-      <div className="max-w-7xl mx-auto py-4 flex items-center justify-between gap-4 pl-0 pr-6">
-        <div className="flex items-center gap-4">
-          {/* Audivine branding - far left corner */}
-          <h1 className="text-3xl font-bold text-gray-900 -ml-24 mr-6">Audivine</h1>
-          
-          {/* Church Logo and Name */}
-          <div className="flex items-center">
-            {settings.church_logo_url && (
+    <header className="sticky top-0 z-50 border-b border-slate-200/80 bg-white/90 shadow-soft backdrop-blur-md">
+      <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-3 sm:px-6 lg:px-8">
+        <div className="flex min-w-0 flex-1 items-center gap-4 sm:gap-6">
+          <Link href="/" className="shrink-0">
+            <span className="text-xl font-semibold tracking-tight text-slate-900">
+              Audivine
+            </span>
+          </Link>
+
+          <div className="flex min-w-[12rem] items-center gap-2 sm:min-w-[16rem]">
+            {settings.church_logo_url ? (
               <img
-                src={`${settings.church_logo_url}?v=${logoKey}&t=${Date.now()}`}
+                src={`${settings.church_logo_url}?v=${logoKey}`}
                 alt={settings.church_name || "Church logo"}
-                className="h-12 w-12 object-contain rounded mr-2"
+                className="h-10 w-10 shrink-0 rounded-lg border border-slate-200/80 bg-white object-contain p-0.5 shadow-sm"
                 key={`${settings.church_logo_url}-${logoKey}`}
-                onError={(e) => {
-                  // If image fails to load, try reloading settings
+                onError={() => {
                   console.error("Logo image failed to load, reloading settings...");
                   loadSettings();
                 }}
               />
+            ) : (
+              <div className="h-10 w-10 shrink-0 rounded-lg border border-slate-200/80 bg-slate-50" />
             )}
-            {settings.church_name && (
-              <h2 className="text-xl font-semibold text-gray-900 mr-6">
-                {settings.church_name}
-              </h2>
-            )}
+            <span className="hidden max-w-[14rem] truncate text-sm font-medium text-slate-700 sm:inline md:max-w-xs">
+              {settings.church_name || " "}
+            </span>
           </div>
-          
-          {/* Navigation Links */}
-          <Link
-            href="/"
-            className="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors"
-          >
-            Home
-          </Link>
-          <Link
-            href="/recorder"
-            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-          >
-            Record
-          </Link>
-          <Link
-            href="/sermons"
-            className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
-          >
-            Sermons Library
-          </Link>
-          <Link
-            href="/settings"
-            className="px-4 py-2 bg-yellow-400 text-white rounded-lg hover:bg-yellow-500 transition-colors"
-          >
-            Settings
-          </Link>
+
+          <nav className="flex items-center gap-1">
+            <Link
+              href="/"
+              className={navClass(pathname, "/")}
+              aria-current={pathname === "/" || pathname === "" ? "page" : undefined}
+            >
+              Home
+            </Link>
+            <Link
+              href="/recorder"
+              className={navClass(pathname, "/recorder")}
+              aria-current={pathname.startsWith("/recorder") ? "page" : undefined}
+            >
+              Record
+            </Link>
+            <Link
+              href="/sermons"
+              className={navClass(pathname, "/sermons")}
+              aria-current={pathname.startsWith("/sermons") ? "page" : undefined}
+            >
+              Sermons
+            </Link>
+            <Link
+              href="/settings"
+              className={navClass(pathname, "/settings")}
+              aria-current={pathname.startsWith("/settings") ? "page" : undefined}
+            >
+              Settings
+            </Link>
+          </nav>
         </div>
-        <div className="flex items-center gap-4">
+
+        <div className="flex shrink-0 items-center justify-end gap-3">
           {user && (
             <>
-              <span className="text-sm text-gray-600">{user.email}</span>
+              <span className="hidden max-w-[200px] truncate text-xs text-slate-500 sm:inline md:max-w-xs">
+                {user.email}
+              </span>
               <button
+                type="button"
                 onClick={signOut}
-                className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
+                className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm transition-colors hover:border-slate-300 hover:bg-slate-50"
               >
-                Logout
+                Log out
               </button>
             </>
           )}
@@ -155,4 +174,3 @@ export default function Header() {
     </header>
   );
 }
-

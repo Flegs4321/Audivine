@@ -6,7 +6,7 @@
 
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "../auth/context/AuthProvider";
@@ -19,6 +19,8 @@ interface UserSettings {
   openai_model?: string | null;
   transcription_method?: string | null;
   openai_prompt?: string | null;
+  anthropic_api_key?: string | null;
+  claude_model?: string | null;
 }
 
 interface Speaker {
@@ -27,6 +29,125 @@ interface Speaker {
   created_at: string;
   tagged?: boolean;
 }
+
+/** Run in Supabase SQL Editor if save fails (migration 017). */
+const ANTHROPIC_COLUMNS_SQL = `ALTER TABLE user_settings
+ADD COLUMN IF NOT EXISTS anthropic_api_key TEXT,
+ADD COLUMN IF NOT EXISTS claude_model TEXT DEFAULT 'claude-sonnet-4-20250514';`;
+
+function isAnthropicColumnMigrationError(message: string): boolean {
+  const m = message.toLowerCase();
+  return (
+    message.includes("Claude (Anthropic) columns") ||
+    (m.includes("could not find") &&
+      (m.includes("anthropic_api_key") || m.includes("claude_model"))) ||
+    (m.includes("pgrst204") && (m.includes("anthropic") || m.includes("claude")))
+  );
+}
+
+/** Preset IDs for the Claude model dropdown (Messages API) + comparison chart rows. */
+const CLAUDE_MODEL_CHOICES: {
+  value: string;
+  label: string;
+  bestFor: string;
+  speed: string;
+  quality: string;
+  cost: string;
+}[] = [
+  {
+    value: "claude-sonnet-4-20250514",
+    label: "Claude Sonnet 4 — balanced (default)",
+    bestFor: "Member summaries, long transcripts, everyday use",
+    speed: "Fast",
+    quality: "Very high",
+    cost: "Medium",
+  },
+  {
+    value: "claude-opus-4-20250514",
+    label: "Claude Opus 4 — most capable",
+    bestFor: "Hardest reasoning, nuance, complex writing",
+    speed: "Slower",
+    quality: "Highest",
+    cost: "Highest",
+  },
+  {
+    value: "claude-3-5-sonnet-20241022",
+    label: "Claude 3.5 Sonnet",
+    bestFor: "General tasks if your project still uses 3.5",
+    speed: "Fast",
+    quality: "High",
+    cost: "Medium",
+  },
+  {
+    value: "claude-3-5-haiku-20241022",
+    label: "Claude 3.5 Haiku — fastest / lowest cost",
+    bestFor: "Short sections, quick drafts, tight budgets",
+    speed: "Fastest",
+    quality: "Good",
+    cost: "Lowest",
+  },
+  {
+    value: "claude-3-opus-20240229",
+    label: "Claude 3 Opus",
+    bestFor: "Legacy “max quality” workloads on older Claude 3",
+    speed: "Slower",
+    quality: "Very high",
+    cost: "High",
+  },
+];
+
+const CLAUDE_MODEL_PRESET_IDS = new Set(CLAUDE_MODEL_CHOICES.map((c) => c.value));
+
+/** ChatGPT / OpenAI API presets — same table shape as Claude comparison. */
+const OPENAI_MODEL_CHART_ROWS: {
+  value: string;
+  label: string;
+  bestFor: string;
+  speed: string;
+  quality: string;
+  cost: string;
+}[] = [
+  {
+    value: "gpt-4o-mini",
+    label: "GPT-4o mini",
+    bestFor: "Summaries, Whisper, everyday use — best default for most users",
+    speed: "Very fast",
+    quality: "High",
+    cost: "Lowest",
+  },
+  {
+    value: "gpt-3.5-turbo",
+    label: "GPT-3.5 Turbo",
+    bestFor: "Very cheap, simple tasks, legacy workflows",
+    speed: "Fastest",
+    quality: "Good",
+    cost: "Very low",
+  },
+  {
+    value: "gpt-4o",
+    label: "GPT-4o",
+    bestFor: "Harder reasoning, richer writing when mini is not enough",
+    speed: "Fast",
+    quality: "Very high",
+    cost: "Medium",
+  },
+  {
+    value: "gpt-4-turbo",
+    label: "GPT-4 Turbo",
+    bestFor: "Long context, complex analysis (if available on your key)",
+    speed: "Fast",
+    quality: "Very high",
+    cost: "Higher",
+  },
+  {
+    value: "gpt-4",
+    label: "GPT-4",
+    bestFor: "Legacy full GPT-4 (if your account still lists it)",
+    speed: "Moderate",
+    quality: "Very high",
+    cost: "Higher",
+  },
+];
 
 export default function SettingsPage() {
   const router = useRouter();
@@ -41,6 +162,8 @@ export default function SettingsPage() {
   const [openaiModel, setOpenaiModel] = useState("gpt-4o-mini");
   const [transcriptionMethod, setTranscriptionMethod] = useState<"browser" | "openai">("browser");
   const [openaiPrompt, setOpenaiPrompt] = useState("");
+  const [anthropicApiKey, setAnthropicApiKey] = useState("");
+  const [claudeModel, setClaudeModel] = useState("claude-sonnet-4-20250514");
   const [testingOpenAI, setTestingOpenAI] = useState(false);
   const [openAITestResult, setOpenAITestResult] = useState<{ 
     connected: boolean; 
@@ -52,6 +175,41 @@ export default function SettingsPage() {
     apiKeyPrefix?: string;
   } | null>(null);
   const [availableModels, setAvailableModels] = useState<string[]>([]);
+
+  const openaiChartRows = useMemo(() => {
+    if (availableModels.length > 0) {
+      return availableModels.map((id) => {
+        const preset = OPENAI_MODEL_CHART_ROWS.find((r) => r.value === id);
+        return (
+          preset ?? {
+            value: id,
+            label: id,
+            bestFor: "Listed for your API key — see OpenAI model docs for details",
+            speed: "—",
+            quality: "—",
+            cost: "—",
+          }
+        );
+      });
+    }
+    return OPENAI_MODEL_CHART_ROWS;
+  }, [availableModels]);
+
+  /** Ensures the dropdown always includes the current saved model (API IDs may differ from our presets). */
+  const openaiDropdownModelIds = useMemo(() => {
+    if (availableModels.length > 0) {
+      if (openaiModel && !availableModels.includes(openaiModel)) {
+        return [openaiModel, ...availableModels];
+      }
+      return availableModels;
+    }
+    const base = OPENAI_MODEL_CHART_ROWS.map((r) => r.value);
+    if (openaiModel && !base.includes(openaiModel)) {
+      return [openaiModel, ...base];
+    }
+    return base;
+  }, [availableModels, openaiModel]);
+
   const [speakers, setSpeakers] = useState<Speaker[]>([]);
   const [loadingSpeakers, setLoadingSpeakers] = useState(false);
   const [newSpeakerName, setNewSpeakerName] = useState("");
@@ -142,6 +300,14 @@ export default function SettingsPage() {
         setOpenaiModel(data.settings?.openai_model || "gpt-4o-mini");
         setTranscriptionMethod((data.settings?.transcription_method as "browser" | "openai") || "browser");
         setOpenaiPrompt(data.settings?.openai_prompt || "");
+        if (data.settings?.anthropic_api_key && data.settings.anthropic_api_key.includes("...")) {
+          setAnthropicApiKey("");
+        } else if (data.settings?.anthropic_api_key && !data.settings.anthropic_api_key.includes("...")) {
+          setAnthropicApiKey(data.settings.anthropic_api_key);
+        } else {
+          setAnthropicApiKey("");
+        }
+        setClaudeModel(data.settings?.claude_model || "claude-sonnet-4-20250514");
       }
     } catch (err) {
       console.error("Error loading settings:", err);
@@ -893,36 +1059,68 @@ export default function SettingsPage() {
         console.warn("[Settings] API key not saved - too short or contains '...'. Length:", openaiApiKey.trim().length);
       }
 
-      // Validate model selection if we have available models
-      if (availableModels.length > 0 && !availableModels.includes(openaiModel)) {
-        const confirmChange = confirm(
-          `The selected model "${openaiModel}" may not be available for your API key. ` +
-          `Available models: ${availableModels.slice(0, 5).join(", ")}. ` +
-          `Do you want to save anyway?`
-        );
-        if (!confirmChange) {
-          return;
-        }
-      }
+      const anthropicKeyToSave =
+        anthropicApiKey &&
+        anthropicApiKey.trim().length > 0 &&
+        !anthropicApiKey.includes("...") &&
+        anthropicApiKey.trim().length > 15
+          ? anthropicApiKey.trim()
+          : undefined;
 
-      const response = await fetch("/api/settings", {
+      const saveBody: Record<string, unknown> = {
+        ...(apiKeyToSave ? { openai_api_key: apiKeyToSave } : {}),
+        ...(anthropicKeyToSave ? { anthropic_api_key: anthropicKeyToSave } : {}),
+        claude_model: claudeModel || "claude-sonnet-4-20250514",
+        openai_model: openaiModel || "gpt-4o-mini",
+        transcription_method: transcriptionMethod,
+        openai_prompt: openaiPrompt || null,
+      };
+
+      const hadAnthropicInPayload = !!(
+        saveBody.anthropic_api_key || saveBody.claude_model
+      );
+
+      let response = await fetch("/api/settings", {
         method: "PUT",
         headers: {
           "Content-Type": "application/json",
           "Authorization": `Bearer ${session.access_token}`,
         },
-        body: JSON.stringify({
-          ...(apiKeyToSave ? { openai_api_key: apiKeyToSave } : {}),
-          openai_model: openaiModel || "gpt-4o-mini",
-          transcription_method: transcriptionMethod,
-          openai_prompt: openaiPrompt || null,
-        }),
+        body: JSON.stringify(saveBody),
       });
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        const errorMessage = errorData.message || errorData.error || `Failed to save OpenAI settings (${response.status})`;
-        
+        let errorMessage =
+          errorData.message || errorData.error || `Failed to save OpenAI settings (${response.status})`;
+
+        if (
+          isAnthropicColumnMigrationError(errorMessage) &&
+          hadAnthropicInPayload
+        ) {
+          const retryBody = { ...saveBody };
+          delete retryBody.anthropic_api_key;
+          delete retryBody.claude_model;
+          response = await fetch("/api/settings", {
+            method: "PUT",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${session.access_token}`,
+            },
+            body: JSON.stringify(retryBody),
+          });
+          if (response.ok) {
+            await loadSettings();
+            setError(
+              `OpenAI settings saved. Add Claude columns in Supabase (SQL Editor), then save again for your Anthropic key.\n\n${ANTHROPIC_COLUMNS_SQL}`
+            );
+            alert(
+              "OpenAI settings saved. Run the SQL on this page, then save again to store your Claude API key."
+            );
+            return;
+          }
+        }
+
         // Check if it's a database migration error or schema cache issue
         if (errorMessage.includes("PGRST204") || errorMessage.includes("Could not find")) {
           if (errorMessage.includes("openai_prompt")) {
@@ -931,16 +1129,16 @@ export default function SettingsPage() {
             throw new Error(`Database migration required: The column doesn't exist. Please apply the appropriate migration file.`);
           }
         }
-        
+
         if (errorMessage.includes("column") && errorMessage.includes("does not exist")) {
           throw new Error(`Database migration required: The column doesn't exist. Please apply the appropriate migration file.`);
         }
-        
+
         throw new Error(errorMessage);
       }
 
       await loadSettings();
-      alert("OpenAI settings saved successfully!");
+      alert("AI settings saved successfully!");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save OpenAI settings");
       console.error("Save error:", err);
@@ -965,19 +1163,35 @@ export default function SettingsPage() {
         ? openaiApiKey.trim() 
         : undefined;
 
+      const anthropicKeyToSave =
+        anthropicApiKey &&
+        anthropicApiKey.trim().length > 0 &&
+        !anthropicApiKey.includes("...") &&
+        anthropicApiKey.trim().length > 15
+          ? anthropicApiKey.trim()
+          : undefined;
+
       const settingsToSave: any = {
         church_name: churchName || null,
         openai_model: openaiModel || "gpt-4o-mini",
         transcription_method: transcriptionMethod,
         openai_prompt: openaiPrompt || null,
+        claude_model: claudeModel || "claude-sonnet-4-20250514",
       };
 
       // Only include API key if it's been changed (not masked and not empty)
       if (apiKeyToSave) {
         settingsToSave.openai_api_key = apiKeyToSave;
       }
+      if (anthropicKeyToSave) {
+        settingsToSave.anthropic_api_key = anthropicKeyToSave;
+      }
 
-      const response = await fetch("/api/settings", {
+      const hadAnthropicInPayload = !!(
+        settingsToSave.anthropic_api_key || settingsToSave.claude_model
+      );
+
+      let response = await fetch("/api/settings", {
         method: "PUT",
         headers: {
           "Content-Type": "application/json",
@@ -988,7 +1202,36 @@ export default function SettingsPage() {
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        const errorMessage = errorData.message || errorData.error || `Failed to save settings (${response.status})`;
+        let errorMessage =
+          errorData.message || errorData.error || `Failed to save settings (${response.status})`;
+
+        if (
+          isAnthropicColumnMigrationError(errorMessage) &&
+          hadAnthropicInPayload
+        ) {
+          const retryPayload = { ...settingsToSave };
+          delete retryPayload.anthropic_api_key;
+          delete retryPayload.claude_model;
+          response = await fetch("/api/settings", {
+            method: "PUT",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${session.access_token}`,
+            },
+            body: JSON.stringify(retryPayload),
+          });
+          if (response.ok) {
+            await loadSettings();
+            setError(
+              `Other settings saved. Add Claude columns in Supabase (SQL Editor), then save again to store your Anthropic key.\n\n${ANTHROPIC_COLUMNS_SQL}`
+            );
+            alert(
+              "Other settings saved. Run the SQL shown in the red message on this page, wait a few seconds, then click Save again to store your Claude API key."
+            );
+            return;
+          }
+        }
+
         throw new Error(errorMessage);
       }
 
@@ -1075,10 +1318,10 @@ export default function SettingsPage() {
   // Show loading state while checking authentication
   if (authLoading || loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+      <div className="flex min-h-screen items-center justify-center bg-slate-50">
         <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
-          <p className="text-gray-600">Loading...</p>
+          <div className="mx-auto mb-4 h-10 w-10 animate-spin rounded-full border-2 border-slate-200 border-t-teal-600" />
+          <p className="text-sm text-slate-600">Loading…</p>
         </div>
       </div>
     );
@@ -1090,34 +1333,34 @@ export default function SettingsPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen bg-slate-50">
       <Header />
 
-      <div className="max-w-4xl mx-auto p-6">
-        <div className="mb-6">
-          <h2 className="text-3xl font-bold text-gray-900 mb-2">Settings</h2>
-          <p className="text-gray-600">Manage your church settings and preferences</p>
+      <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6 lg:px-8">
+        <div className="mb-8">
+          <h2 className="text-3xl font-semibold tracking-tight text-slate-900">Settings</h2>
+          <p className="mt-1 text-slate-600">Church branding, transcription, and speakers</p>
         </div>
 
         {/* Error Display */}
         {error && (
-          <div className="mb-6 bg-red-50 border border-red-200 rounded-lg p-4">
-            <p className="text-red-800">{error}</p>
+          <div className="mb-6 rounded-xl border border-red-200/80 bg-red-50/90 p-4">
+            <p className="whitespace-pre-wrap break-words text-sm text-red-800">{error}</p>
           </div>
         )}
 
         <div className="space-y-6">
           {/* Church Logo Section */}
-          <div className="bg-white rounded-lg shadow p-6">
-            <h3 className="text-xl font-semibold mb-4">Church Logo</h3>
+          <div className="rounded-2xl border border-slate-200/80 bg-white p-6 shadow-sm">
+            <h3 className="mb-4 text-xl font-semibold text-slate-900">Church Logo</h3>
             
             {settings.church_logo_url && (
               <div className="mb-4">
-                <p className="text-sm text-gray-600 mb-2">Current Logo:</p>
+                <p className="text-sm text-slate-600 mb-2">Current Logo:</p>
                 <img
                   src={settings.church_logo_url}
                   alt="Church logo"
-                  className="max-w-xs max-h-32 object-contain border border-gray-200 rounded"
+                  className="max-w-xs max-h-32 object-contain border border-slate-200 rounded"
                 />
                 <button
                   onClick={handleRemoveLogo}
@@ -1130,17 +1373,17 @@ export default function SettingsPage() {
 
             <div className="space-y-4">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
+                <label className="block text-sm font-medium text-slate-700 mb-2">
                   Upload Logo
                 </label>
                 <input
                   type="file"
                   accept="image/*"
                   onChange={(e) => setLogoFile(e.target.files?.[0] || null)}
-                  className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+                  className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-teal-50 file:text-teal-900 hover:file:bg-teal-100"
                 />
                 {logoFile && (
-                  <div className="mt-2 text-sm text-gray-600">
+                  <div className="mt-2 text-sm text-slate-600">
                     Selected: {logoFile.name} ({(logoFile.size / 1024).toFixed(2)} KB)
                   </div>
                 )}
@@ -1148,15 +1391,183 @@ export default function SettingsPage() {
               <button
                 onClick={handleLogoUpload}
                 disabled={!logoFile || uploading}
-                className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="px-6 py-2 bg-teal-600 text-white rounded-lg hover:bg-teal-700 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {uploading ? "Uploading..." : "Upload Logo"}
               </button>
             </div>
           </div>
 
+          {/* Claude (Anthropic) — member summaries prefer Claude when set */}
+          <div className="rounded-2xl border border-slate-200/80 bg-white p-6 shadow-sm">
+            <h3 className="text-xl font-semibold mb-4">Claude (Anthropic)</h3>
+            <div className="space-y-4">
+              {(() => {
+                const hasAnthropic =
+                  settings.anthropic_api_key &&
+                  settings.anthropic_api_key.length > 12 &&
+                  settings.anthropic_api_key.includes("...");
+                return hasAnthropic ? (
+                  <div className="bg-green-50 border border-green-200 rounded-lg p-4 mb-4">
+                    <p className="text-sm text-green-800 font-semibold">
+                      Anthropic API key configured
+                    </p>
+                    <p className="text-sm text-green-700 mt-1">
+                      Member summaries and Word export use Claude (this key takes priority over OpenAI for summaries).
+                    </p>
+                  </div>
+                ) : (
+                  <div className="bg-slate-50 border border-slate-200 rounded-lg p-4 mb-4">
+                    <p className="text-sm text-slate-800 font-semibold mb-1">Optional</p>
+                    <p className="text-sm text-slate-700">
+                      Add an Anthropic API key to generate member summaries with Claude. If you leave this empty,
+                      summaries use your OpenAI key when that is configured.
+                    </p>
+                  </div>
+                );
+              })()}
+
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">
+                  Anthropic API key
+                </label>
+                <input
+                  type="password"
+                  value={anthropicApiKey}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (v.includes("...")) return;
+                    setAnthropicApiKey(v);
+                  }}
+                  placeholder={
+                    settings.anthropic_api_key
+                      ? "Enter new key to update (current key is saved)"
+                      : "sk-ant-api03-..."
+                  }
+                  autoComplete="off"
+                  data-form-type="other"
+                  data-lpignore="true"
+                  name="anthropic-api-key"
+                  id="anthropic-api-key"
+                  className="w-full px-3 py-2 border border-slate-300 rounded focus:ring-2 focus:ring-teal-500/40 font-mono text-sm"
+                />
+                <p className="mt-1 text-xs text-slate-500">
+                  {settings.anthropic_api_key
+                    ? "Key is stored for your account only. Enter a new key to replace it, or leave blank to keep the current key."
+                    : "From the Anthropic Console. Used for member-facing summaries when set."}
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">
+                  Claude model
+                </label>
+                <select
+                  value={
+                    CLAUDE_MODEL_PRESET_IDS.has(claudeModel)
+                      ? claudeModel
+                      : "__custom__"
+                  }
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (v === "__custom__") {
+                      setClaudeModel("");
+                    } else {
+                      setClaudeModel(v);
+                    }
+                  }}
+                  className="w-full px-3 py-2 border border-slate-300 rounded focus:ring-2 focus:ring-teal-500/40 text-sm"
+                >
+                  {CLAUDE_MODEL_CHOICES.map(({ value, label }) => (
+                    <option key={value} value={value}>
+                      {label}
+                    </option>
+                  ))}
+                  <option value="__custom__">Custom model ID…</option>
+                </select>
+                {!CLAUDE_MODEL_PRESET_IDS.has(claudeModel) && (
+                  <input
+                    type="text"
+                    value={claudeModel}
+                    onChange={(e) => setClaudeModel(e.target.value.trim())}
+                    placeholder="e.g. claude-sonnet-4-20250514"
+                    className="mt-2 w-full px-3 py-2 border border-slate-300 rounded focus:ring-2 focus:ring-teal-500/40 font-mono text-sm"
+                  />
+                )}
+                <p className="mt-1 text-xs text-slate-500">
+                  Used for member summaries and section summaries when Claude is selected. Choose a preset or enter any model ID your Anthropic account supports.
+                </p>
+
+                <div className="mt-3 overflow-hidden rounded-lg border border-slate-200 bg-slate-50">
+                  <p className="border-b border-slate-200 bg-slate-100/90 px-3 py-2 text-xs font-semibold text-slate-900">
+                    Claude model comparison (like choosing in ChatGPT)
+                    <span className="ml-1 font-normal text-slate-600">
+                      — click a row to select that model
+                    </span>
+                  </p>
+                  <div className="overflow-x-auto">
+                    <table className="w-full min-w-[520px] text-left text-xs text-slate-800">
+                      <thead>
+                        <tr className="border-b border-slate-200 bg-white/80 text-slate-600">
+                          <th className="px-3 py-2 font-semibold">Model</th>
+                          <th className="px-3 py-2 font-semibold">Best for</th>
+                          <th className="px-3 py-2 font-semibold">Speed</th>
+                          <th className="px-3 py-2 font-semibold">Quality</th>
+                          <th className="px-3 py-2 font-semibold">Relative cost</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-200 bg-white/60">
+                        {CLAUDE_MODEL_CHOICES.map((row) => (
+                          <tr
+                            key={row.value}
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => setClaudeModel(row.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" || e.key === " ") {
+                                e.preventDefault();
+                                setClaudeModel(row.value);
+                              }
+                            }}
+                            className={
+                              claudeModel === row.value
+                                ? "cursor-pointer bg-teal-50/90 ring-1 ring-inset ring-teal-200/80"
+                                : "cursor-pointer hover:bg-slate-50/50"
+                            }
+                          >
+                            <td className="px-3 py-2 font-mono text-[11px] text-slate-900">
+                              {row.label.split(" — ")[0]}
+                            </td>
+                            <td className="px-3 py-2">{row.bestFor}</td>
+                            <td className="px-3 py-2 whitespace-nowrap">{row.speed}</td>
+                            <td className="px-3 py-2 whitespace-nowrap">{row.quality}</td>
+                            <td className="px-3 py-2 whitespace-nowrap">{row.cost}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <ul className="space-y-1 border-t border-slate-200 px-3 py-2 text-xs text-slate-700">
+                    <li>
+                      <span className="font-semibold text-slate-800">Start here:</span>{" "}
+                      <strong>Claude Sonnet 4</strong> is the usual pick for sermon summaries and Word export.
+                    </li>
+                    <li>
+                      <span className="font-semibold text-slate-800">Tight budget:</span> choose{" "}
+                      <strong>Haiku</strong> for speed and lowest cost; quality is still solid for summaries.
+                    </li>
+                    <li>
+                      <span className="font-semibold text-slate-800">Max quality:</span>{" "}
+                      <strong>Opus 4</strong> when you need the strongest reasoning and polish (higher cost).
+                    </li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+          </div>
+
           {/* OpenAI Settings Section */}
-          <div className="bg-white rounded-lg shadow p-6">
+          <div className="rounded-2xl border border-slate-200/80 bg-white p-6 shadow-sm">
             <h3 className="text-xl font-semibold mb-4">OpenAI Settings</h3>
             <div className="space-y-4">
               {(() => {
@@ -1171,29 +1582,29 @@ export default function SettingsPage() {
                       ✅ OpenAI API Key Configured
                     </p>
                     <p className="text-sm text-green-700 mt-1">
-                      Summarization and analysis features are available.
+                      OpenAI transcription, segment auto-detect, and (if no Claude key) member summaries are available.
                     </p>
                   </div>
                 ) : (
                   <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-4">
                     <p className="text-sm text-yellow-800 font-semibold mb-2">
-                      ⚠️ OpenAI API Key Required
+                      ⚠️ OpenAI API Key Missing
                     </p>
                     <p className="text-sm text-yellow-700">
-                      You must configure your own OpenAI API key to use summarization and analysis features. 
-                      Without your own API key, these features will not be available.
+                      OpenAI Whisper transcription and automatic segment detection require an OpenAI API key.
+                      Member summaries can still use Claude if you configure an Anthropic key above.
                     </p>
                   </div>
                 );
               })()}
               
-              <p className="text-sm text-gray-600">
-                Configure your own OpenAI API key to use your own account for transcription and summarization. 
-                <strong className="text-gray-800"> You must provide your own API key to use these features.</strong>
+              <p className="text-sm text-slate-600">
+                Configure your OpenAI API key for Whisper transcription, segment detection, and for summaries when no Anthropic key is set.
+                <strong className="text-slate-800"> You provide your own API keys; they are stored for your account only.</strong>
               </p>
               
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
+                <label className="block text-sm font-medium text-slate-700 mb-2">
                   OpenAI API Key
                 </label>
                 <input
@@ -1217,9 +1628,9 @@ export default function SettingsPage() {
                   data-lpignore="true"
                   name="openai-api-key"
                   id="openai-api-key"
-                  className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 font-mono text-sm"
+                  className="w-full px-3 py-2 border border-slate-300 rounded focus:ring-2 focus:ring-teal-500/40 font-mono text-sm"
                 />
-                <p className="mt-1 text-xs text-gray-500">
+                <p className="mt-1 text-xs text-slate-500">
                   {settings.openai_api_key 
                     ? "API key is configured. Enter a new key above to update it, or leave blank to keep the current key."
                     : "Your API key is stored securely and only used for your account. Enter your OpenAI API key."}
@@ -1227,91 +1638,133 @@ export default function SettingsPage() {
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  AI Model
+                <label className="block text-sm font-medium text-slate-700 mb-2">
+                  ChatGPT model
                 </label>
-                {availableModels.length > 0 ? (
-                  <>
-                    <select
-                      value={openaiModel}
-                      onChange={(e) => setOpenaiModel(e.target.value)}
-                      className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
-                    >
-                      {availableModels.map((model) => {
-                        // Model characteristics
-                        const getModelInfo = (m: string) => {
-                          if (m.includes("gpt-4o-mini")) {
-                            return { label: "Most Cost-Effective | Very Fast | Recommended", speed: "Very Fast", cost: "Lowest" };
-                          } else if (m.includes("gpt-3.5-turbo")) {
-                            return { label: "Fastest | Very Cost-Effective", speed: "Fastest", cost: "Very Low" };
-                          } else if (m.includes("gpt-4o") && !m.includes("mini")) {
-                            return { label: "Most Capable | Fast | Moderate Cost", speed: "Fast", cost: "Moderate" };
-                          } else if (m.includes("gpt-4-turbo")) {
-                            return { label: "High Quality | Fast | Higher Cost", speed: "Fast", cost: "Higher" };
-                          } else if (m.includes("gpt-4") && !m.includes("turbo") && !m.includes("o")) {
-                            return { label: "High Quality | Moderate | Higher Cost", speed: "Moderate", cost: "Higher" };
-                          } else {
-                            return { label: "", speed: "Unknown", cost: "Unknown" };
-                          }
-                        };
-                        
-                        const info = getModelInfo(model);
-                        return (
-                          <option key={model} value={model}>
-                            {model} {info.label && `- ${info.label}`}
-                          </option>
-                        );
-                      })}
-                    </select>
-                    {openAITestResult && !openAITestResult.isModelAvailable && (
-                      <p className="mt-1 text-xs text-yellow-600">
-                        ⚠️ Selected model may not be available. Test connection to verify.
-                      </p>
-                    )}
-                    <div className="mt-2 p-3 bg-blue-50 border border-blue-200 rounded-lg">
-                      <p className="text-xs font-semibold text-blue-900 mb-1">Model Selection Guide:</p>
-                      <ul className="text-xs text-blue-800 space-y-1">
-                        <li>💰 <strong>Most Cost-Effective:</strong> gpt-4o-mini, gpt-3.5-turbo</li>
-                        <li>⚡ <strong>Fastest:</strong> gpt-3.5-turbo, gpt-4o-mini</li>
-                        <li>🎯 <strong>Most Capable:</strong> gpt-4o, gpt-4-turbo</li>
-                        <li>✅ <strong>Recommended:</strong> gpt-4o-mini (best balance of cost, speed, and quality)</li>
-                      </ul>
-                    </div>
-                    <p className="mt-1 text-xs text-gray-500">
-                      Models shown are available for your API key. Test connection to refresh the list.
-                    </p>
-                  </>
-                ) : (
-                  <>
-                    <select
-                      value={openaiModel}
-                      onChange={(e) => setOpenaiModel(e.target.value)}
-                      className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
-                    >
-                      <option value="gpt-4o-mini">GPT-4o Mini - Most Cost-Effective | Very Fast | Recommended</option>
-                      <option value="gpt-3.5-turbo">GPT-3.5 Turbo - Fastest | Very Cost-Effective</option>
-                      <option value="gpt-4o">GPT-4o - Most Capable | Fast | Moderate Cost</option>
-                      <option value="gpt-4-turbo">GPT-4 Turbo - High Quality | Fast | Higher Cost</option>
-                      <option value="gpt-4">GPT-4 - High Quality | Moderate | Higher Cost</option>
-                    </select>
-                    <div className="mt-2 p-3 bg-blue-50 border border-blue-200 rounded-lg">
-                      <p className="text-xs font-semibold text-blue-900 mb-1">Model Selection Guide:</p>
-                      <ul className="text-xs text-blue-800 space-y-1">
-                        <li>💰 <strong>Most Cost-Effective:</strong> gpt-4o-mini, gpt-3.5-turbo</li>
-                        <li>⚡ <strong>Fastest:</strong> gpt-3.5-turbo, gpt-4o-mini</li>
-                        <li>🎯 <strong>Most Capable:</strong> gpt-4o, gpt-4-turbo</li>
-                        <li>✅ <strong>Recommended:</strong> gpt-4o-mini (best balance of cost, speed, and quality)</li>
-                      </ul>
-                    </div>
-                    <p className="mt-1 text-xs text-gray-500">
-                      Select which OpenAI model to use for summarization. <strong>Test connection</strong> to verify which models are available for your API key.
-                    </p>
-                  </>
+                <select
+                  value={openaiModel}
+                  onChange={(e) => setOpenaiModel(e.target.value)}
+                  className="w-full px-3 py-2 border border-slate-300 rounded focus:ring-2 focus:ring-teal-500/40"
+                >
+                  {openaiDropdownModelIds.map((model) => {
+                    const getModelInfo = (m: string) => {
+                      if (m.includes("gpt-4o-mini")) {
+                        return { label: "Most Cost-Effective | Very Fast | Recommended", speed: "Very Fast", cost: "Lowest" };
+                      } else if (m.includes("gpt-3.5-turbo")) {
+                        return { label: "Fastest | Very Cost-Effective", speed: "Fastest", cost: "Very Low" };
+                      } else if (m.includes("gpt-4o") && !m.includes("mini")) {
+                        return { label: "Most Capable | Fast | Moderate Cost", speed: "Fast", cost: "Moderate" };
+                      } else if (m.includes("gpt-4-turbo")) {
+                        return { label: "High Quality | Fast | Higher Cost", speed: "Fast", cost: "Higher" };
+                      } else if (m.includes("gpt-4") && !m.includes("turbo") && !m.includes("o")) {
+                        return { label: "High Quality | Moderate | Higher Cost", speed: "Moderate", cost: "Higher" };
+                      } else {
+                        return { label: "", speed: "Unknown", cost: "Unknown" };
+                      }
+                    };
+                    const preset = OPENAI_MODEL_CHART_ROWS.find((r) => r.value === model);
+                    const info = getModelInfo(model);
+                    const label = preset
+                      ? preset.label
+                      : `${model}${info.label ? ` — ${info.label}` : ""}`;
+                    return (
+                      <option key={model} value={model}>
+                        {label}
+                      </option>
+                    );
+                  })}
+                </select>
+                {openAITestResult && !openAITestResult.isModelAvailable && (
+                  <p className="mt-1 text-xs text-yellow-600">
+                    ⚠️ Selected model may not be available. Test connection to verify.
+                  </p>
                 )}
+                <p className="mt-1 text-xs text-slate-500">
+                  {availableModels.length > 0
+                    ? "Models listed are what your API key can use. Test connection to refresh."
+                    : "Default OpenAI model IDs. Test connection to load the list your key supports."}
+                </p>
+
+                <div className="mt-3 overflow-hidden rounded-lg border border-slate-200 bg-slate-50">
+                  <p className="border-b border-slate-200 bg-slate-100/90 px-3 py-2 text-xs font-semibold text-slate-900">
+                    ChatGPT model comparison (like choosing in ChatGPT)
+                    <span className="ml-1 font-normal text-slate-600">
+                      — click a row to select that model
+                    </span>
+                  </p>
+                  <div className="overflow-x-auto">
+                    <table className="w-full min-w-[520px] text-left text-xs text-slate-800">
+                      <thead>
+                        <tr className="border-b border-slate-200 bg-white/80 text-slate-600">
+                          <th className="px-3 py-2 font-semibold">Model</th>
+                          <th className="px-3 py-2 font-semibold">Best for</th>
+                          <th className="px-3 py-2 font-semibold">Speed</th>
+                          <th className="px-3 py-2 font-semibold">Quality</th>
+                          <th className="px-3 py-2 font-semibold">Relative cost</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-200 bg-white/60">
+                        {openaiChartRows.map((row) => {
+                          const canSelect =
+                            availableModels.length === 0 ||
+                            availableModels.includes(row.value);
+                          return (
+                            <tr
+                              key={row.value}
+                              role="button"
+                              tabIndex={canSelect ? 0 : -1}
+                              onClick={() => {
+                                if (canSelect) setOpenaiModel(row.value);
+                              }}
+                              onKeyDown={(e) => {
+                                if (!canSelect) return;
+                                if (e.key === "Enter" || e.key === " ") {
+                                  e.preventDefault();
+                                  setOpenaiModel(row.value);
+                                }
+                              }}
+                              className={
+                                openaiModel === row.value
+                                  ? canSelect
+                                    ? "cursor-pointer bg-teal-50/90 ring-1 ring-inset ring-teal-200/80"
+                                    : "bg-teal-50/90 ring-1 ring-inset ring-teal-200/80 opacity-90"
+                                  : canSelect
+                                    ? "cursor-pointer hover:bg-slate-50/50"
+                                    : "cursor-not-allowed opacity-60"
+                              }
+                            >
+                              <td className="px-3 py-2 font-mono text-[11px] text-slate-900">
+                                {row.label}
+                              </td>
+                              <td className="px-3 py-2">{row.bestFor}</td>
+                              <td className="px-3 py-2 whitespace-nowrap">{row.speed}</td>
+                              <td className="px-3 py-2 whitespace-nowrap">{row.quality}</td>
+                              <td className="px-3 py-2 whitespace-nowrap">{row.cost}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  <ul className="space-y-1 border-t border-slate-200 px-3 py-2 text-xs text-slate-700">
+                    <li>
+                      <span className="font-semibold text-slate-800">Start here:</span>{" "}
+                      <strong>GPT-4o mini</strong> is usually the best balance for summaries and transcription.
+                    </li>
+                    <li>
+                      <span className="font-semibold text-slate-800">Tight budget:</span>{" "}
+                      <strong>GPT-3.5 Turbo</strong> for the lowest cost; quality is still fine for many tasks.
+                    </li>
+                    <li>
+                      <span className="font-semibold text-slate-800">Max quality:</span>{" "}
+                      <strong>GPT-4o</strong> or <strong>GPT-4 Turbo</strong> when you need stronger reasoning (higher cost).
+                    </li>
+                  </ul>
+                </div>
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
+                <label className="block text-sm font-medium text-slate-700 mb-2">
                   Custom OpenAI Prompt
                 </label>
                 <textarea
@@ -1325,20 +1778,20 @@ export default function SettingsPage() {
                   placeholder="Enter a custom prompt to instruct OpenAI on how to process transcripts (e.g., 'Focus on key biblical themes and practical applications')"
                   rows={4}
                   maxLength={5000}
-                  className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3 py-2 border border-slate-300 rounded focus:ring-2 focus:ring-teal-500/40"
                 />
                 <div className="flex justify-between items-center mt-1">
-                  <p className="text-xs text-gray-500">
+                  <p className="text-xs text-slate-500">
                     Customize how OpenAI processes your transcripts. Leave blank to use default prompts.
                   </p>
-                  <p className="text-xs text-gray-400">
+                  <p className="text-xs text-slate-400">
                     {openaiPrompt.length}/5000 characters
                   </p>
                 </div>
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
+                <label className="block text-sm font-medium text-slate-700 mb-2">
                   Transcription Method
                 </label>
                 {(() => {
@@ -1358,14 +1811,14 @@ export default function SettingsPage() {
                           }
                           setTranscriptionMethod(newValue);
                         }}
-                        className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                        className="w-full px-3 py-2 border border-slate-300 rounded focus:ring-2 focus:ring-teal-500/40"
                       >
                         <option value="browser">Browser Speech Recognition (Free, Real-time)</option>
                         <option value="openai" disabled={!hasApiKey}>
                           OpenAI Whisper API {!hasApiKey && "(API Key Required)"}
                         </option>
                       </select>
-                      <p className="mt-1 text-xs text-gray-500">
+                      <p className="mt-1 text-xs text-slate-500">
                         {transcriptionMethod === "browser" 
                           ? "Uses your browser's built-in speech recognition. Free but may be less accurate."
                           : "Uses OpenAI Whisper API for transcription. More accurate but requires your OpenAI API key and incurs costs."}
@@ -1399,14 +1852,14 @@ export default function SettingsPage() {
               <div className="flex gap-2">
                 <button
                   onClick={handleSaveOpenAISettings}
-                  className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                  className="px-6 py-2 bg-teal-600 text-white rounded-lg hover:bg-teal-700"
                 >
-                  Save OpenAI Settings
+                  Save AI settings
                 </button>
                 <button
                   onClick={testOpenAIConnection}
                   disabled={testingOpenAI}
-                  className="px-6 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="px-6 py-2 rounded-lg bg-teal-600 text-white hover:bg-teal-700 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {testingOpenAI ? "Testing..." : "Test Connection"}
                 </button>
@@ -1450,20 +1903,20 @@ export default function SettingsPage() {
           </div>
 
           {/* Speakers Section */}
-          <div className="bg-white rounded-lg shadow p-6">
+          <div className="rounded-2xl border border-slate-200/80 bg-white p-6 shadow-sm">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-xl font-semibold">Speakers/Preachers</h3>
               <button
                 type="button"
                 onClick={() => setSpeakersSectionExpanded(!speakersSectionExpanded)}
-                className="px-4 py-2 text-sm text-gray-700 bg-gray-100 hover:bg-gray-200 rounded border border-gray-300 transition-colors"
+                className="px-4 py-2 text-sm text-slate-700 bg-slate-100 hover:bg-slate-200 rounded border border-slate-300 transition-colors"
               >
                 {speakersSectionExpanded ? "▼ Hide" : "▶ Show"} ({speakers.length})
               </button>
             </div>
             {speakersSectionExpanded && (
               <div className="space-y-4">
-                <p className="text-sm text-gray-600 mb-4">
+                <p className="text-sm text-slate-600 mb-4">
                   Manage your list of speakers. These will be available when editing sermons.
                 </p>
               
@@ -1480,7 +1933,7 @@ export default function SettingsPage() {
                     }
                   }}
                   placeholder="Enter speaker name"
-                  className="flex-1 px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                  className="flex-1 px-3 py-2 border border-slate-300 rounded focus:ring-2 focus:ring-teal-500/40"
                 />
                 <button
                   onClick={(e) => {
@@ -1488,18 +1941,18 @@ export default function SettingsPage() {
                     handleAddSpeaker();
                   }}
                   disabled={addingSpeaker || !newSpeakerName.trim()}
-                  className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
+                  className="px-4 py-2 bg-teal-600 text-white rounded hover:bg-teal-700 disabled:opacity-50"
                 >
                   {addingSpeaker ? "Adding..." : "Add Speaker"}
                 </button>
               </div>
 
               {/* Excel/Word Import */}
-              <div className="mt-4 pt-4 border-t border-gray-200">
-                <label className="block text-sm font-medium text-gray-700 mb-2">
+              <div className="mt-4 pt-4 border-t border-slate-200">
+                <label className="block text-sm font-medium text-slate-700 mb-2">
                   Import Speakers from File
                 </label>
-                <p className="text-xs text-gray-500 mb-3">
+                <p className="text-xs text-slate-500 mb-3">
                   Upload an Excel file (.xlsx or .xls) with speaker names in the first column, a Word document (.docx) with one name per line, or a text file (.txt) with one name per line. Names can be in "Last, First" format or separated by commas. Duplicate names will prompt you to overwrite or skip.
                 </p>
                 <div className="flex gap-2">
@@ -1507,19 +1960,19 @@ export default function SettingsPage() {
                     type="file"
                     accept=".xlsx,.xls,.docx"
                     onChange={(e) => setImportFile(e.target.files?.[0] || null)}
-                    className="flex-1 px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 text-sm"
+                    className="flex-1 px-3 py-2 border border-slate-300 rounded focus:ring-2 focus:ring-teal-500/40 text-sm"
                     disabled={importingSpeakers}
                   />
                   <button
                     onClick={handleImportExcel}
                     disabled={importingSpeakers || !importFile}
-                    className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50"
+                    className="px-4 py-2 rounded bg-teal-600 text-white hover:bg-teal-700 disabled:opacity-50"
                   >
                     {importingSpeakers ? "Importing..." : "Import"}
                   </button>
                 </div>
                 {importFile && (
-                  <p className="text-xs text-gray-600 mt-2">
+                  <p className="text-xs text-slate-600 mt-2">
                     Selected: {importFile.name}
                   </p>
                 )}
@@ -1527,13 +1980,13 @@ export default function SettingsPage() {
 
               {/* Speakers List */}
               {loadingSpeakers ? (
-                <p className="text-sm text-gray-500">Loading speakers...</p>
+                <p className="text-sm text-slate-500">Loading speakers...</p>
               ) : speakers.length === 0 ? (
                 <div className="space-y-2">
-                  <p className="text-sm text-gray-500">No speakers added yet. Add one above to get started.</p>
+                  <p className="text-sm text-slate-500">No speakers added yet. Add one above to get started.</p>
                   <button
                     onClick={loadSpeakers}
-                    className="text-xs text-blue-600 hover:text-blue-800 underline"
+                    className="text-xs text-teal-600 hover:text-slate-800 underline"
                   >
                     Refresh List
                   </button>
@@ -1541,25 +1994,25 @@ export default function SettingsPage() {
               ) : (
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
-                    <h4 className="text-sm font-medium text-gray-700">Current Speakers ({speakers.length}):</h4>
+                    <h4 className="text-sm font-medium text-slate-700">Current Speakers ({speakers.length}):</h4>
                     <button
                       onClick={loadSpeakers}
-                      className="text-xs text-blue-600 hover:text-blue-800 underline"
+                      className="text-xs text-teal-600 hover:text-slate-800 underline"
                     >
                       Refresh
                     </button>
                   </div>
                   
                   {/* Select All and Delete Selected */}
-                  <div className="flex items-center justify-between pb-2 border-b border-gray-200">
+                  <div className="flex items-center justify-between pb-2 border-b border-slate-200">
                     <div className="flex items-center gap-2">
                       <input
                         type="checkbox"
                         checked={selectedSpeakers.size === speakers.length && speakers.length > 0}
                         onChange={handleSelectAll}
-                        className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                        className="w-4 h-4 text-teal-600 border-slate-300 rounded focus:ring-teal-500/40"
                       />
-                      <label className="text-sm text-gray-700">
+                      <label className="text-sm text-slate-700">
                         Select All ({selectedSpeakers.size} selected)
                       </label>
                     </div>
@@ -1581,8 +2034,8 @@ export default function SettingsPage() {
                           selectedSpeakers.has(speaker.id)
                             ? "bg-yellow-50 border-yellow-300"
                             : speaker.tagged 
-                            ? "bg-blue-50 border-blue-300" 
-                            : "bg-gray-50 border-gray-200"
+                            ? "bg-sky-50 border-sky-200" 
+                            : "bg-slate-50 border-slate-200"
                         }`}
                       >
                         <div className="flex items-center gap-2">
@@ -1590,17 +2043,17 @@ export default function SettingsPage() {
                             type="checkbox"
                             checked={selectedSpeakers.has(speaker.id)}
                             onChange={() => handleToggleSpeakerSelection(speaker.id)}
-                            className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                            className="w-4 h-4 text-teal-600 border-slate-300 rounded focus:ring-teal-500/40"
                           />
                           <button
                             onClick={() => handleToggleTagged(speaker.id, speaker.tagged || false)}
                             disabled={taggedFeatureAvailable === false}
                             className={`px-2 py-1 text-sm rounded transition-colors ${
                               taggedFeatureAvailable === false
-                                ? "bg-gray-100 text-gray-400 cursor-not-allowed"
+                                ? "bg-slate-100 text-slate-400 cursor-not-allowed"
                                 : speaker.tagged
-                                ? "bg-blue-600 text-white hover:bg-blue-700"
-                                : "bg-gray-200 text-gray-600 hover:bg-gray-300"
+                                ? "bg-teal-600 text-white hover:bg-teal-700"
+                                : "bg-slate-200 text-slate-600 hover:bg-slate-300"
                             }`}
                             title={
                               taggedFeatureAvailable === false
@@ -1613,7 +2066,7 @@ export default function SettingsPage() {
                             {speaker.tagged ? "⭐ Tagged" : "Tag"}
                           </button>
                           <span className={`text-sm font-medium ${
-                            speaker.tagged ? "text-blue-900" : "text-gray-900"
+                            speaker.tagged ? "text-slate-900" : "text-slate-900"
                           }`}>
                             {speaker.name}
                           </span>
@@ -1635,11 +2088,11 @@ export default function SettingsPage() {
           </div>
 
           {/* Church Name Section */}
-          <div className="bg-white rounded-lg shadow p-6">
+          <div className="rounded-2xl border border-slate-200/80 bg-white p-6 shadow-sm">
             <h3 className="text-xl font-semibold mb-4">Church Name</h3>
             <div className="space-y-4">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
+                <label className="block text-sm font-medium text-slate-700 mb-2">
                   Church Name
                 </label>
                 <input
@@ -1647,12 +2100,12 @@ export default function SettingsPage() {
                   value={churchName}
                   onChange={(e) => setChurchName(e.target.value)}
                   placeholder="Enter your church name"
-                  className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3 py-2 border border-slate-300 rounded focus:ring-2 focus:ring-teal-500/40"
                 />
               </div>
               <button
                 onClick={handleSaveChurchName}
-                className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                className="px-6 py-2 bg-teal-600 text-white rounded-lg hover:bg-teal-700"
               >
                 Save Church Name
               </button>
@@ -1660,17 +2113,17 @@ export default function SettingsPage() {
           </div>
 
           {/* Save All Settings Button */}
-          <div className="bg-white rounded-lg shadow p-6 border-t-4 border-blue-500">
+          <div className="rounded-2xl border border-slate-200/80 bg-white p-6 shadow-sm border-t-4 border-teal-500">
             <div className="flex items-center justify-between">
               <div>
                 <h3 className="text-xl font-semibold mb-2">Save All Settings</h3>
-                <p className="text-sm text-gray-600">
+                <p className="text-sm text-slate-600">
                   Save all your settings at once, including church name, OpenAI settings, and transcription preferences.
                 </p>
               </div>
               <button
                 onClick={handleSaveAllSettings}
-                className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-semibold text-lg shadow-md hover:shadow-lg transition-all"
+                className="px-6 py-3 bg-teal-600 text-white rounded-lg hover:bg-teal-700 font-semibold text-lg shadow-md hover:shadow-lg transition-all"
               >
                 Save All Settings
               </button>

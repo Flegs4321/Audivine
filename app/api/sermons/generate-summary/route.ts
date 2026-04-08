@@ -6,6 +6,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { getUserSummaryGenerationSettings } from "@/lib/ai/summary-generation-settings";
 import { getUserOpenAISettings } from "@/lib/openai/user-settings";
 
 export const runtime = "nodejs";
@@ -53,21 +54,32 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Get user's OpenAI settings (does NOT fall back to env vars)
-    const userSettings = await getUserOpenAISettings(user.id, token);
+    let genSettings = await getUserSummaryGenerationSettings(user.id, token, supabase);
 
-    if (!userSettings || !userSettings.apiKey) {
+    if (!genSettings) {
+      const openaiOnly = await getUserOpenAISettings(user.id, token);
+      if (openaiOnly?.apiKey) {
+        genSettings = {
+          provider: "openai",
+          prompt: openaiOnly.prompt ?? null,
+          openai: {
+            apiKey: openaiOnly.apiKey,
+            model: openaiOnly.model,
+          },
+        };
+      }
+    }
+
+    if (!genSettings) {
       return NextResponse.json(
-        { 
-          error: "OpenAI API key not configured", 
-          message: "Please configure your OpenAI API key in Settings to generate summaries. Without your own API key, this feature is not available." 
+        {
+          error: "API key not configured",
+          message:
+            "Add an Anthropic (Claude) API key or an OpenAI API key in Settings to generate member summaries.",
         },
         { status: 400 }
       );
     }
-
-    const openaiApiKey = userSettings.apiKey;
-    const openaiModel = userSettings.model;
 
     const body = await request.json();
     const { recordingId, transcript, sermonSpeakerName } = body;
@@ -142,12 +154,12 @@ export async function POST(request: NextRequest) {
         ? `\nImportant: The person who delivered the sermon/message is "${sermonSpeakerName.trim()}". In your summary, use the section header "MESSAGE: ${sermonSpeakerName.trim()}" (e.g. "3) MESSAGE: ${sermonSpeakerName.trim()}") for the sermon section.\n`
         : "";
 
-    // Generate comprehensive summary using OpenAI
-    // Use only the custom prompt if provided, otherwise use default
+    const customPrompt = genSettings.prompt?.trim() ?? "";
+
+    // Generate comprehensive summary (Claude preferred when Anthropic key is set)
     let prompt: string;
-    if (userSettings.prompt && userSettings.prompt.trim().length > 0) {
-      // Use only the custom prompt and transcript
-      prompt = `${userSettings.prompt.trim()}${sermonSpeakerInstruction}\n\nTranscript (with speaker names in format "Speaker Name - text"):\n${fullTranscript.substring(0, 16000)}`;
+    if (customPrompt.length > 0) {
+      prompt = `${customPrompt}${sermonSpeakerInstruction}\n\nTranscript (with speaker names in format "Speaker Name - text"):\n${fullTranscript.substring(0, 16000)}`;
     } else {
       // Fallback to default prompt if no custom prompt
       prompt = `You are creating a summary of a church service sermon to send to all church members. 
@@ -169,49 +181,82 @@ Sermon Transcript (with speaker names in format "Speaker Name - text"):
 ${fullTranscript.substring(0, 16000)}`;
     }
 
-    // Use minimal system message when custom prompt is provided, otherwise use default
-    const systemMessage = userSettings.prompt && userSettings.prompt.trim().length > 0
-      ? "You are a helpful assistant. Follow the user's instructions exactly."
-      : "You are a helpful assistant that creates engaging, well-formatted summaries of church sermons for distribution to members. Always format your response clearly with sections and bullet points.";
+    const systemMessage =
+      customPrompt.length > 0
+        ? "You are a helpful assistant. Follow the user's instructions exactly."
+        : "You are a helpful assistant that creates engaging, well-formatted summaries of church sermons for distribution to members. Always format your response clearly with sections and bullet points.";
 
-    const openaiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${openaiApiKey}`,
-      },
-      body: JSON.stringify({
-        model: openaiModel,
-        messages: [
-          {
-            role: "system",
-            content: systemMessage,
-          },
-          {
-            role: "user",
-            content: prompt,
-          },
-        ],
-        temperature: 0.7,
-        max_tokens: 2000,
-      }),
-    });
+    let summary: string | undefined;
 
-    if (!openaiResponse.ok) {
-      const errorText = await openaiResponse.text();
-      console.error("OpenAI API error:", errorText);
+    if (genSettings.provider === "anthropic" && genSettings.anthropic) {
+      const anthropicRes = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": genSettings.anthropic.apiKey,
+          "anthropic-version": "2023-06-01",
+        },
+        body: JSON.stringify({
+          model: genSettings.anthropic.model,
+          max_tokens: 4096,
+          system: systemMessage,
+          messages: [{ role: "user", content: prompt }],
+        }),
+      });
+
+      if (!anthropicRes.ok) {
+        const errText = await anthropicRes.text();
+        console.error("Anthropic API error:", errText);
+        return NextResponse.json(
+          { error: "Anthropic API error", message: `Failed to generate summary: ${anthropicRes.statusText}` },
+          { status: 500 }
+        );
+      }
+
+      const anthropicData = (await anthropicRes.json()) as {
+        content?: Array<{ type: string; text?: string }>;
+      };
+      const block = anthropicData.content?.find((c) => c.type === "text");
+      summary = block?.text?.trim();
+    } else if (genSettings.provider === "openai" && genSettings.openai) {
+      const openaiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${genSettings.openai.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: genSettings.openai.model,
+          messages: [
+            { role: "system", content: systemMessage },
+            { role: "user", content: prompt },
+          ],
+          temperature: 0.7,
+          max_tokens: 2000,
+        }),
+      });
+
+      if (!openaiResponse.ok) {
+        const errorText = await openaiResponse.text();
+        console.error("OpenAI API error:", errorText);
+        return NextResponse.json(
+          { error: "OpenAI API error", message: `Failed to generate summary: ${openaiResponse.statusText}` },
+          { status: 500 }
+        );
+      }
+
+      const openaiData = await openaiResponse.json();
+      summary = openaiData.choices[0]?.message?.content;
+    } else {
       return NextResponse.json(
-        { error: "OpenAI API error", message: `Failed to generate summary: ${openaiResponse.statusText}` },
+        { error: "Configuration error", message: "No valid summary provider configured." },
         { status: 500 }
       );
     }
 
-    const openaiData = await openaiResponse.json();
-    const summary = openaiData.choices[0]?.message?.content;
-
     if (!summary) {
       return NextResponse.json(
-        { error: "No summary generated", message: "OpenAI did not return a summary" },
+        { error: "No summary generated", message: "The model did not return a summary" },
         { status: 500 }
       );
     }
@@ -220,6 +265,7 @@ ${fullTranscript.substring(0, 16000)}`;
       success: true,
       summary,
       transcriptLength: fullTranscript.length,
+      provider: genSettings.provider,
     });
   } catch (error) {
     console.error("Generate summary API error:", error);

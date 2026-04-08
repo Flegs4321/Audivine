@@ -31,6 +31,10 @@ interface Speaker {
   created_at: string;
 }
 
+/** Matches app secondary actions (outline, not yellow/green/red). */
+const sermonRowActionClass =
+  "rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition-colors hover:border-slate-300 hover:bg-slate-50";
+
 export default function SermonsPage() {
   const router = useRouter();
   const { user, signOut, loading: authLoading } = useAuth();
@@ -377,10 +381,10 @@ export default function SermonsPage() {
   // Show loading state while checking authentication
   if (authLoading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+      <div className="flex min-h-screen items-center justify-center bg-slate-50">
         <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
-          <p className="text-gray-600">Loading...</p>
+          <div className="mx-auto mb-4 h-10 w-10 animate-spin rounded-full border-2 border-slate-200 border-t-teal-600" />
+          <p className="text-sm text-slate-600">Loading…</p>
         </div>
       </div>
     );
@@ -392,18 +396,18 @@ export default function SermonsPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen bg-slate-50">
       <Header />
 
-      <div className="max-w-7xl mx-auto p-6">
-        <div className="mb-6">
-          <h2 className="text-3xl font-bold text-gray-900 mb-2">Sermons Library</h2>
-          <p className="text-gray-600">Upload and manage your sermon recordings</p>
+      <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+        <div className="mb-8">
+          <h2 className="text-3xl font-semibold tracking-tight text-slate-900">Sermons library</h2>
+          <p className="mt-1 text-slate-600">Upload and manage sermon recordings</p>
         </div>
 
         {/* Error Display */}
         {error && (
-          <div className="mb-6 bg-red-50 border border-red-200 rounded-lg p-4">
+          <div className="mb-6 rounded-xl border border-red-200/80 bg-red-50/90 p-4">
             <p className="text-red-800">{error}</p>
           </div>
         )}
@@ -411,29 +415,29 @@ export default function SermonsPage() {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* Upload Section */}
           <div className="lg:col-span-1">
-            <div className="bg-white rounded-lg shadow p-6">
-              <h2 className="text-xl font-semibold mb-4">Upload Sermon</h2>
+            <div className="rounded-2xl border border-slate-200/80 bg-white p-6 shadow-sm">
+              <h2 className="mb-4 text-xl font-semibold text-slate-900">Upload sermon</h2>
               <div className="space-y-4">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                  <label className="block text-sm font-medium text-slate-700 mb-2">
                     Audio File
                   </label>
                   <input
                     type="file"
                     accept="audio/*"
                     onChange={(e) => setUploadFile(e.target.files?.[0] || null)}
-                    className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+                    className="block w-full text-sm text-slate-500 file:mr-4 file:rounded-lg file:border-0 file:bg-teal-50 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-teal-900 hover:file:bg-teal-100"
                   />
                 </div>
                 {uploadFile && (
-                  <div className="text-sm text-gray-600">
+                  <div className="text-sm text-slate-600">
                     Selected: {uploadFile.name} ({(uploadFile.size / 1024 / 1024).toFixed(2)} MB)
                   </div>
                 )}
                 <button
                   onClick={handleFileUpload}
                   disabled={!uploadFile || uploading}
-                  className="w-full px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="w-full rounded-xl bg-teal-600 px-6 py-2.5 text-white shadow-sm hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {uploading ? "Uploading..." : "Upload Sermon"}
                 </button>
@@ -443,79 +447,79 @@ export default function SermonsPage() {
 
           {/* Library Section */}
           <div className="lg:col-span-2">
-            <div className="bg-white rounded-lg shadow">
-              <div className="p-6 border-b border-gray-200">
-                <h2 className="text-xl font-semibold">All Sermons ({sermons.length})</h2>
+            <div className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-sm">
+              <div className="border-b border-slate-200 p-6">
+                <h2 className="text-xl font-semibold text-slate-900">All sermons ({sermons.length})</h2>
               </div>
               {loading ? (
-                <div className="p-6 text-center text-gray-500">Loading...</div>
+                <div className="p-6 text-center text-slate-500">Loading...</div>
               ) : sermons.length === 0 ? (
-                <div className="p-6 text-center text-gray-500">
+                <div className="p-6 text-center text-slate-500">
                   No sermons found. Upload a sermon to get started.
                 </div>
               ) : (
-                <div className="divide-y divide-gray-200">
+                <div className="divide-y divide-slate-200">
                   {sermons.map((sermon) => (
-                    <div key={sermon.id} className="p-6 hover:bg-gray-50">
+                    <div key={sermon.id} className="p-6 hover:bg-slate-50">
                       {editingId === sermon.id ? (
                         <div className="space-y-4">
                           <div>
-                            <label className="block text-sm font-medium text-gray-700 mb-1">
+                            <label className="block text-sm font-medium text-slate-700 mb-1">
                               Title
                             </label>
                             <input
                               type="text"
                               value={editForm.title || ""}
                               onChange={(e) => setEditForm({ ...editForm, title: e.target.value })}
-                              className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                              className="w-full px-3 py-2 border border-slate-300 rounded focus:ring-2 focus:ring-teal-500/40"
                               placeholder="Sermon title"
                             />
                           </div>
                           <div>
-                            <label className="block text-sm font-medium text-gray-700 mb-1">
+                            <label className="block text-sm font-medium text-slate-700 mb-1">
                               Recording Name (Filename)
                             </label>
                             <input
                               type="text"
                               value={editForm.filename || ""}
                               onChange={(e) => setEditForm({ ...editForm, filename: e.target.value })}
-                              className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                              className="w-full px-3 py-2 border border-slate-300 rounded focus:ring-2 focus:ring-teal-500/40"
                               placeholder="Recording filename"
                             />
-                            <p className="mt-1 text-xs text-gray-500">This is the original filename. Changing it won't rename the file in storage.</p>
+                            <p className="mt-1 text-xs text-slate-500">This is the original filename. Changing it won't rename the file in storage.</p>
                           </div>
                           <div className="grid grid-cols-2 gap-4">
                             <div>
-                              <label className="block text-sm font-medium text-gray-700 mb-1">
+                              <label className="block text-sm font-medium text-slate-700 mb-1">
                                 Date
                               </label>
                               <input
                                 type="date"
                                 value={editForm.sermon_date || ""}
                                 onChange={(e) => setEditForm({ ...editForm, sermon_date: e.target.value })}
-                                className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                                className="w-full px-3 py-2 border border-slate-300 rounded focus:ring-2 focus:ring-teal-500/40"
                               />
                             </div>
                             <div>
-                              <label className="block text-sm font-medium text-gray-700 mb-1">
+                              <label className="block text-sm font-medium text-slate-700 mb-1">
                                 Time
                               </label>
                               <input
                                 type="time"
                                 value={editForm.sermon_time || ""}
                                 onChange={(e) => setEditForm({ ...editForm, sermon_time: e.target.value })}
-                                className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                                className="w-full px-3 py-2 border border-slate-300 rounded focus:ring-2 focus:ring-teal-500/40"
                               />
                             </div>
                           </div>
                           <div>
-                            <label className="block text-sm font-medium text-gray-700 mb-1">
+                            <label className="block text-sm font-medium text-slate-700 mb-1">
                               Speaker
                             </label>
                             <select
                               value={editForm.speaker || ""}
                               onChange={(e) => setEditForm({ ...editForm, speaker: e.target.value })}
-                              className="w-full px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"
+                              className="w-full px-3 py-2 border border-slate-300 rounded focus:ring-2 focus:ring-teal-500/40"
                             >
                               <option value="">Select a speaker...</option>
                               {speakers.map((speaker) => (
@@ -525,7 +529,7 @@ export default function SermonsPage() {
                               ))}
                             </select>
                             {speakers.length === 0 && (
-                              <p className="mt-1 text-xs text-gray-500">
+                              <p className="mt-1 text-xs text-slate-500">
                                 No speakers available. <Link href="/settings" className="text-blue-600 hover:underline">Add speakers in Settings</Link>
                               </p>
                             )}
@@ -534,14 +538,14 @@ export default function SermonsPage() {
                             <button
                               onClick={() => handleSaveEdit(sermon.id)}
                               disabled={saving}
-                              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 text-sm"
+                              className="px-4 py-2 bg-teal-600 text-white rounded-lg hover:bg-teal-700 disabled:opacity-50 text-sm"
                             >
                               {saving ? "Saving..." : "Save"}
                             </button>
                             <button
                               onClick={handleCancelEdit}
                               disabled={saving}
-                              className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 disabled:opacity-50 text-sm"
+                              className="px-4 py-2 bg-slate-200 text-slate-700 rounded-lg hover:bg-slate-300 disabled:opacity-50 text-sm"
                             >
                               Cancel
                             </button>
@@ -551,10 +555,10 @@ export default function SermonsPage() {
                         <>
                           <div className="flex items-start justify-between">
                             <div className="flex-1">
-                              <h3 className="text-lg font-semibold text-gray-900">
+                              <h3 className="text-lg font-semibold text-slate-900">
                                 {sermon.title || sermon.filename}
                               </h3>
-                              <div className="flex items-center gap-4 mt-2 text-sm text-gray-500">
+                              <div className="flex items-center gap-4 mt-2 text-sm text-slate-500">
                                 <span>{formatDuration(sermon.duration)}</span>
                                 {sermon.sermon_date && (
                                   <span>{new Date(sermon.sermon_date).toLocaleDateString()}</span>
@@ -565,37 +569,41 @@ export default function SermonsPage() {
                                 {sermon.speaker && (
                                   <span className="font-medium">{sermon.speaker}</span>
                                 )}
-                                <span className="text-xs text-gray-400">
+                                <span className="text-xs text-slate-400">
                                   Recorded: {formatTimestamp(sermon.created_at)}
                                 </span>
                               </div>
                             </div>
-                            <div className="flex gap-2">
+                            <div className="flex flex-wrap gap-2">
                               <button
+                                type="button"
                                 onClick={() => handleEditSermon(sermon)}
-                                className="px-4 py-2 bg-yellow-600 text-white rounded-lg hover:bg-yellow-700 text-sm"
+                                className={sermonRowActionClass}
                               >
                                 Edit
                               </button>
                               {sermon.storage_url && (
                                 <>
                                   <button
+                                    type="button"
                                     onClick={() => setPlayingId(playingId === sermon.id ? null : sermon.id)}
-                                    className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm"
+                                    className={sermonRowActionClass}
                                   >
                                     {playingId === sermon.id ? "Hide Player" : "Play"}
                                   </button>
                                   <button
+                                    type="button"
                                     onClick={() => router.push(`/recorder/review?id=${sermon.id}`)}
-                                    className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm"
+                                    className={sermonRowActionClass}
                                   >
                                     Review
                                   </button>
                                 </>
                               )}
                               <button
+                                type="button"
                                 onClick={() => handleDeleteSermon(sermon.id, sermon.title || sermon.filename)}
-                                className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 text-sm"
+                                className={sermonRowActionClass}
                               >
                                 Delete
                               </button>
@@ -605,7 +613,7 @@ export default function SermonsPage() {
                       )}
                       {/* Audio Player */}
                       {playingId === sermon.id && sermon.storage_url && (
-                        <div className="mt-4 pt-4 border-t border-gray-200">
+                        <div className="mt-4 pt-4 border-t border-slate-200">
                           <audio
                             controls
                             src={sermon.storage_url}

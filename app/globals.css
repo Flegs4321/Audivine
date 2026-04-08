@@ -2,6 +2,16 @@
 @tailwind components;
 @tailwind utilities;
 
+@layer base {
+  html {
+    @apply scroll-smooth;
+    scrollbar-gutter: stable;
+  }
+  ::selection {
+    @apply bg-teal-200/80 text-slate-900;
+  }
+}
+
 @keyframes fade-in {
   from {
     opacity: 0;
