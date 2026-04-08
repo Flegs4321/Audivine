@@ -99,11 +99,16 @@ export function buildWordExportModel(input: BuildWordExportModelInput): WordExpo
   };
 }
 
-/** docxtemplater data: use `{{name}}` and `{#announcements}{.}{/announcements}` in Word. */
+/**
+ * Data for docxtemplater. The template file is only a layout shell: only text inside
+ * `{{tags}}` or loops is replaced. Everything else prints as you designed it in Word.
+ */
 export function wordExportModelToTemplateData(
   model: WordExportModel,
   fullSummary: string
 ): Record<string, unknown> {
+  const summaryLines = fullSummary.split(/\r?\n/);
+
   return {
     church_name: model.churchName,
     church_address: model.churchAddress,
@@ -111,7 +116,6 @@ export function wordExportModelToTemplateData(
     bulletin_date_compact: model.bulletinDateCompact,
     bulletin_title: "Sunday Bulletin",
     message_title: model.messageTitle,
-    /** Sonlight-style full section heading, e.g. "4. MESSAGE – Name – Topic" when AI gives a title on line 1 */
     message_heading: model.messageTitle,
     announcements: model.announcements,
     upcoming_events: model.upcomingEventsPadded6,
@@ -122,6 +126,12 @@ export function wordExportModelToTemplateData(
     spotify_channel: model.spotifyChannel,
     spotify_footer:
       "Past Sermons are Posted on SPOTIFY – Search for Channel:",
+    /** Entire AI member summary (current text from the modal). */
     full_summary: fullSummary,
+    /** Same as full_summary — use whichever name you prefer in Word. */
+    member_summary: fullSummary,
+    message_summary: fullSummary,
+    /** One entry per line of the summary — use `{#summary_lines}{.}{/summary_lines}` for line breaks. */
+    summary_lines: summaryLines,
   };
 }

@@ -840,7 +840,9 @@ function ReviewPageContent() {
         "@/lib/word/word-export-model"
       );
       const { renderProgrammaticWordDoc } = await import("@/lib/word/render-programmatic-word");
-      const { renderWordTemplate } = await import("@/lib/word/render-template-word");
+      const { renderWordTemplate, WordTemplateRenderError } = await import(
+        "@/lib/word/render-template-word"
+      );
       const { CHURCH_WORD_TEMPLATE_PATH } = await import("@/lib/word/constants");
 
       const model = buildWordExportModel({
@@ -855,6 +857,7 @@ function ReviewPageContent() {
 
       let blob: Blob;
       let usedTemplate = false;
+      let templateRenderFailed = false;
       try {
         const res = await fetch(CHURCH_WORD_TEMPLATE_PATH, { cache: "no-store" });
         if (res.ok) {
@@ -865,16 +868,29 @@ function ReviewPageContent() {
           blob = await renderProgrammaticWordDoc(model);
         }
       } catch (templateErr) {
-        console.warn("Word template not used, using built-in layout:", templateErr);
+        console.error("Word template render failed:", templateErr);
+        templateRenderFailed = true;
         blob = await renderProgrammaticWordDoc(model);
+        usedTemplate = false;
+        const tip =
+          templateErr instanceof WordTemplateRenderError && templateErr.hint
+            ? `\n\n${templateErr.hint}`
+            : "\n\nIn your template, replace sample text with placeholders like {{member_summary}} or {#sermon}➤ {.}{/sermon} — see public/word-templates/README.md.";
+        alert(
+          `Could not fill your Word template (${templateErr instanceof Error ? templateErr.message : "error"}). Using the built-in layout instead.${tip}`
+        );
       }
 
       saveAs(blob, filename);
-      alert(
-        usedTemplate
-          ? "Word document exported (your church-template.docx)."
-          : "Word document exported (built-in layout). Add public/word-templates/church-template.docx to use your own design."
-      );
+      if (usedTemplate) {
+        alert(
+          "Exported: your template design with the current member summary (this session’s Generate summary text)."
+        );
+      } else if (!templateRenderFailed) {
+        alert(
+          "Exported using the built-in layout (church-template.docx missing or not found). Current summary data is included."
+        );
+      }
     } catch (err) {
       console.error("Failed to export to Word:", err);
       alert("Failed to export to Word document. Please try again.");
