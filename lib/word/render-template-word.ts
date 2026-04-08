@@ -17,6 +17,34 @@ export class WordTemplateRenderError extends Error {
   }
 }
 
+function buildTemplateHint(err: unknown): string {
+  const fallback =
+    "Check your Word placeholders use docxtemplater syntax, for example {{member_summary}} and loops like {#summary_lines}{.}{/summary_lines}.";
+
+  const record = err as {
+    properties?: { errors?: Array<{ properties?: { explanation?: string; context?: string } }> };
+  };
+  const errors = record?.properties?.errors;
+  if (!Array.isArray(errors) || errors.length === 0) return fallback;
+
+  const first = errors[0]?.properties;
+  const explanation = first?.explanation;
+  const context = first?.context;
+
+  if (explanation?.includes("duplicate open tags") || explanation?.includes("duplicate close tags")) {
+    return (
+      "Your template has broken placeholder braces (for example `{{{{church_name}}}}` or split braces). " +
+      "Delete that tag and retype it in one go as plain text, e.g. {{church_name}}."
+    );
+  }
+
+  if (explanation) {
+    return context ? `${explanation} (near: "${context}")` : explanation;
+  }
+
+  return fallback;
+}
+
 export async function renderWordTemplate(
   templateArrayBuffer: ArrayBuffer,
   data: Record<string, unknown>
@@ -43,8 +71,7 @@ export async function renderWordTemplate(
     const message = err instanceof Error ? err.message : "Template render failed";
     throw new WordTemplateRenderError(message, {
       cause: err,
-      hint:
-        "Check your Word placeholders use docxtemplater syntax, for example {{member_summary}} and loops like {#summary_lines}{.}{/summary_lines}.",
+      hint: buildTemplateHint(err),
     });
   }
 }
