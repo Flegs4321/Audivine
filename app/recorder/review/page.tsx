@@ -184,15 +184,10 @@ function ReviewPageContent() {
         if (response.ok) {
           const data = await response.json();
           const s = data.settings;
-          const openaiConfigured =
-            s?.openai_api_key &&
-            s.openai_api_key.length > 10 &&
-            (s.openai_api_key.startsWith("sk-") || s.openai_api_key.startsWith("sk_proj-"));
-          const anthropicConfigured =
-            s?.anthropic_api_key &&
-            s.anthropic_api_key.length > 12 &&
-            s.anthropic_api_key.includes("...");
-          setHasSummaryApiKey(!!(openaiConfigured || anthropicConfigured));
+          const { resolveEffectiveMemberSummaryProvider } = await import(
+            "@/lib/ai/summary-generation-settings"
+          );
+          setHasSummaryApiKey(resolveEffectiveMemberSummaryProvider(s) !== null);
         } else {
           setHasSummaryApiKey(false);
         }
@@ -836,64 +831,49 @@ function ReviewPageContent() {
 
     try {
       const { saveAs } = await import("file-saver");
-      const { buildWordExportModel, wordExportModelToTemplateData } = await import(
-        "@/lib/word/word-export-model"
-      );
-      const { renderProgrammaticWordDoc } = await import("@/lib/word/render-programmatic-word");
-      const { renderWordTemplate, WordTemplateRenderError } = await import(
-        "@/lib/word/render-template-word"
-      );
-      const { CHURCH_WORD_TEMPLATE_PATH } = await import("@/lib/word/constants");
+      const { supabase } = await import("@/lib/supabase/client");
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
 
-      const model = buildWordExportModel({
-        fullSummary,
-        sections,
-        transcriptChunks,
-        churchSettings,
+      if (!session?.access_token) {
+        alert("You must be logged in to export.");
+        return;
+      }
+
+      const response = await fetch("/api/bulletin/from-summary", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({ summary: fullSummary }),
       });
 
-      const filename = `${model.churchName.replace(/\s+/g, "_")}_${model.sermonDate.replace(/\s+/g, "_")}.docx`;
-      const templateData = wordExportModelToTemplateData(model, fullSummary);
-
-      let blob: Blob;
-      let usedTemplate = false;
-      let templateRenderFailed = false;
-      try {
-        const res = await fetch(CHURCH_WORD_TEMPLATE_PATH, { cache: "no-store" });
-        if (res.ok) {
-          const buf = await res.arrayBuffer();
-          blob = await renderWordTemplate(buf, templateData);
-          usedTemplate = true;
-        } else {
-          blob = await renderProgrammaticWordDoc(model);
-        }
-      } catch (templateErr) {
-        console.error("Word template render failed:", templateErr);
-        templateRenderFailed = true;
-        blob = await renderProgrammaticWordDoc(model);
-        usedTemplate = false;
-        const tip =
-          templateErr instanceof WordTemplateRenderError && templateErr.hint
-            ? `\n\n${templateErr.hint}`
-            : "\n\nIn your template, replace sample text with placeholders like {{member_summary}} or {#sermon}➤ {.}{/sermon} — see public/word-templates/README.md.";
-        alert(
-          `Could not fill your Word template (${templateErr instanceof Error ? templateErr.message : "error"}). Using the built-in layout instead.${tip}`
-        );
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        const msg =
+          typeof errData.message === "string"
+            ? errData.message
+            : typeof errData.error === "string"
+              ? errData.error
+              : `Export failed (${response.status})`;
+        throw new Error(msg);
       }
+
+      const blob = await response.blob();
+      const cd = response.headers.get("Content-Disposition");
+      const m = cd?.match(/filename\*?=(?:UTF-8'')?["']?([^"';]+)["']?/i) ?? cd?.match(/filename="([^"]+)"/i);
+      const fallback = `SundayBulletin_${new Date().toISOString().slice(0, 10)}.docx`;
+      const filename = m?.[1]?.trim() || fallback;
 
       saveAs(blob, filename);
-      if (usedTemplate) {
-        alert(
-          "Exported: your template design with the current member summary (this session’s Generate summary text)."
-        );
-      } else if (!templateRenderFailed) {
-        alert(
-          "Exported using the built-in layout (church-template.docx missing or not found). Current summary data is included."
-        );
-      }
+      alert(
+        "Exported: bulletin-final/template/template.docx filled from your current member summary (same mapping as bulletin-final; no second AI call)."
+      );
     } catch (err) {
-      console.error("Failed to export to Word:", err);
-      alert("Failed to export to Word document. Please try again.");
+      console.error("Failed to export bulletin:", err);
+      alert(err instanceof Error ? err.message : "Failed to export Word document. Please try again.");
     }
   };
 

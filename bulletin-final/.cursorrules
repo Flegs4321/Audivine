@@ -1,0 +1,38 @@
+# Sonlight Chapel Bulletin Generator - Cursor Rules
+
+## What this project does
+This generates formatted .docx church bulletins for Sonlight Chapel from raw notes.
+The user will paste raw Sunday service notes and ask you to generate a bulletin.
+
+## How to generate a bulletin
+
+When the user provides notes (pasted text or a file) and asks to generate a bulletin:
+
+1. Save their notes to a file (e.g. `notes.txt`) in `bulletin-final/`
+2. Run: `node generate.js notes.txt` from the `bulletin-final/` directory
+3. The output `.docx` is saved in `output/`
+4. Tell the user the path to the file
+
+**Supabase (stored transcripts):** From `bulletin-final/`, `node generate.js` loads the latest transcript (see README for `SUPABASE_USER_ID`). For a specific recording: `node generate.js <recording-uuid>`. Requires `ANTHROPIC_API_KEY`, `NEXT_PUBLIC_SUPABASE_URL`, and `SUPABASE_SERVICE_ROLE_KEY` in the repo root `.env.local` (or the environment).
+
+## How it works under the hood
+- Without a file or recording id, `generate.js` pulls transcript text from Supabase (`recordings.transcript_chunks`) using env-configured credentials
+- `generate.js` sends the raw notes to Claude API to organize them into structured JSON
+- It then opens `template/template.docx` (the master Word template)
+- It finds placeholder markers in the XML and replaces them with the organized content
+- For variable-length sections (events, prayer items, sermon points), it clones the sample bullet XML for each item
+- It outputs a perfectly formatted .docx file
+
+## Template placeholders
+Fixed: {{DATE}}, {{THIS_EVENING}}, {{WEDNESDAY_EVE}}, {{DEVOTIONS}}, {{CHAIR_SETUP}}, {{HOST_HOSTESS}}, {{IN_SERVICE}}, {{SPEAKER}}, {{SERMON_TITLE}}
+Dynamic (cloned per item): {{ANNOUNCEMENT_ITEM}}, {{EVENT_ITEM}}, {{PRAYER_ITEM}}, {{MESSAGE_POINT}}
+
+## API keys and Supabase
+- Set `ANTHROPIC_API_KEY` in the repo root `.env.local` (loaded automatically) or in the shell.
+- For Supabase-backed runs, also set `NEXT_PUBLIC_SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` (local use only; never commit secrets).
+
+## Important
+- The template.docx in template/ should NOT be edited unless the user wants to change formatting
+- Output files go to output/ folder
+- No npm install needed — this uses only Node.js built-in modules (fs, path, readline, child_process, fetch)
+- Requires Node.js 18+ (for built-in fetch)

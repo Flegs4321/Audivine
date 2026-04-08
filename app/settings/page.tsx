@@ -21,6 +21,8 @@ interface UserSettings {
   openai_prompt?: string | null;
   anthropic_api_key?: string | null;
   claude_model?: string | null;
+  /** openai | anthropic — which API generates member summary text */
+  member_summary_provider?: string | null;
 }
 
 interface Speaker {
@@ -97,6 +99,146 @@ const CLAUDE_MODEL_CHOICES: {
 ];
 
 const CLAUDE_MODEL_PRESET_IDS = new Set(CLAUDE_MODEL_CHOICES.map((c) => c.value));
+
+function ApiQuickGuide({
+  expanded,
+  onToggle,
+}: {
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <div className="rounded-2xl border border-teal-200/80 bg-gradient-to-b from-teal-50/40 to-white p-6 shadow-sm">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="flex w-full items-start justify-between gap-3 text-left"
+      >
+        <div>
+          <h3 className="text-xl font-semibold text-slate-900">APIs & models — quick guide</h3>
+          <p className="mt-1 text-sm text-slate-600">
+            Keys, flow, and where to choose models — start here if Settings feels scattered.
+          </p>
+        </div>
+        <span className="shrink-0 text-slate-500" aria-hidden>
+          {expanded ? "▼" : "▶"}
+        </span>
+      </button>
+      {expanded && (
+        <div className="mt-4 space-y-4 border-t border-teal-100/80 pt-4">
+          <div>
+            <p className="text-sm font-semibold text-slate-800">Which key do I need?</p>
+            <ul className="mt-2 list-disc space-y-1.5 pl-5 text-sm text-slate-700">
+              <li>
+                <strong>OpenAI</strong> — Whisper transcription (if you choose it), segment detection, and member
+                summaries when no Anthropic key is saved.
+              </li>
+              <li>
+                <strong>Anthropic (Claude)</strong> — Optional. Use the <strong>Member summaries use</strong> toggle to
+                pick OpenAI vs Claude; add an Anthropic key when you choose Claude.
+              </li>
+              <li>
+                <strong>Word export</strong> — Fills your bulletin template from the member summary text you already
+                have; no extra AI call at export time.
+              </li>
+            </ul>
+          </div>
+          <div className="rounded-lg bg-slate-50 px-3 py-3 text-slate-800">
+            <p className="mb-2 text-sm font-semibold text-slate-900">Flow</p>
+            <div className="flex flex-wrap items-center gap-1 text-xs sm:text-sm">
+              <span className="rounded-md bg-white px-2 py-1 shadow-sm ring-1 ring-slate-200">Record</span>
+              <span className="text-slate-400">→</span>
+              <span className="rounded-md bg-white px-2 py-1 shadow-sm ring-1 ring-slate-200">Transcript</span>
+              <span className="text-slate-400">→</span>
+              <span className="rounded-md bg-teal-100 px-2 py-1 ring-1 ring-teal-200/80">AI summary</span>
+              <span className="text-slate-400">→</span>
+              <span className="rounded-md bg-white px-2 py-1 shadow-sm ring-1 ring-slate-200">Review / edit</span>
+              <span className="text-slate-400">→</span>
+              <span className="rounded-md bg-white px-2 py-1 shadow-sm ring-1 ring-slate-200">Export Word</span>
+            </div>
+            <p className="mt-2 text-xs text-slate-600">
+              Leaderboards and pricing change often — use the links below when picking a model, not a fixed “best forever”
+              list.
+            </p>
+          </div>
+          <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white/80">
+            <table className="w-full min-w-[440px] text-left text-xs text-slate-800">
+              <thead>
+                <tr className="border-b border-slate-200 bg-slate-100/90">
+                  <th className="px-3 py-2 font-semibold">Task</th>
+                  <th className="px-3 py-2 font-semibold">Uses</th>
+                  <th className="px-3 py-2 font-semibold">Configure</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200">
+                <tr>
+                  <td className="px-3 py-2">Whisper &amp; segments</td>
+                  <td className="px-3 py-2">OpenAI API key</td>
+                  <td className="px-3 py-2">OpenAI section below</td>
+                </tr>
+                <tr>
+                  <td className="px-3 py-2">Member summary text</td>
+                  <td className="px-3 py-2">OpenAI or Claude (your choice)</td>
+                  <td className="px-3 py-2">Toggle at top, then models in each section</td>
+                </tr>
+                <tr>
+                  <td className="px-3 py-2">Custom summary instructions</td>
+                  <td className="px-3 py-2">Applies to whichever provider runs the summary</td>
+                  <td className="px-3 py-2">“Custom instructions” in OpenAI section (shared field)</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div>
+            <p className="text-sm font-semibold text-slate-800">Compare models (external charts &amp; docs)</p>
+            <ul className="mt-2 flex flex-wrap gap-x-5 gap-y-2 text-sm text-teal-800">
+              <li>
+                <a
+                  href="https://chat.lmsys.org/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline decoration-teal-300 underline-offset-2 hover:text-teal-950"
+                >
+                  LMSYS Chatbot Arena
+                </a>
+              </li>
+              <li>
+                <a
+                  href="https://artificialanalysis.ai/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline decoration-teal-300 underline-offset-2 hover:text-teal-950"
+                >
+                  Artificial Analysis
+                </a>
+              </li>
+              <li>
+                <a
+                  href="https://platform.openai.com/docs/models"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline decoration-teal-300 underline-offset-2 hover:text-teal-950"
+                >
+                  OpenAI model docs
+                </a>
+              </li>
+              <li>
+                <a
+                  href="https://docs.anthropic.com/en/docs/about-claude/models"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline decoration-teal-300 underline-offset-2 hover:text-teal-950"
+                >
+                  Anthropic model docs
+                </a>
+              </li>
+            </ul>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 /** ChatGPT / OpenAI API presets — same table shape as Claude comparison. */
 const OPENAI_MODEL_CHART_ROWS: {
@@ -220,6 +362,9 @@ export default function SettingsPage() {
   const [taggedFeatureAvailable, setTaggedFeatureAvailable] = useState<boolean | null>(null);
   const [selectedSpeakers, setSelectedSpeakers] = useState<Set<string>>(new Set());
   const [speakersSectionExpanded, setSpeakersSectionExpanded] = useState(false);
+  const [apiGuideExpanded, setApiGuideExpanded] = useState(true);
+  /** Which API runs member summaries (saved as member_summary_provider). */
+  const [memberSummaryProvider, setMemberSummaryProvider] = useState<"openai" | "anthropic">("openai");
 
   // Redirect to login if not authenticated
   useEffect(() => {
@@ -281,6 +426,7 @@ export default function SettingsPage() {
       if (data.settings === null) {
         setSettings({});
         setChurchName("");
+        setMemberSummaryProvider("openai");
       } else {
         setSettings(data.settings || {});
         setChurchName(data.settings?.church_name || "");
@@ -308,6 +454,16 @@ export default function SettingsPage() {
           setAnthropicApiKey("");
         }
         setClaudeModel(data.settings?.claude_model || "claude-sonnet-4-20250514");
+        const pref = data.settings?.member_summary_provider;
+        if (pref === "openai" || pref === "anthropic") {
+          setMemberSummaryProvider(pref);
+        } else {
+          const hasA =
+            data.settings?.anthropic_api_key &&
+            data.settings.anthropic_api_key.length > 12 &&
+            data.settings.anthropic_api_key.includes("...");
+          setMemberSummaryProvider(hasA ? "anthropic" : "openai");
+        }
       }
     } catch (err) {
       console.error("Error loading settings:", err);
@@ -1031,7 +1187,7 @@ export default function SettingsPage() {
     }
   };
 
-  const handleSaveOpenAISettings = async () => {
+  const handleSaveAiSettings = async () => {
     setError(null);
 
     try {
@@ -1074,6 +1230,7 @@ export default function SettingsPage() {
         openai_model: openaiModel || "gpt-4o-mini",
         transcription_method: transcriptionMethod,
         openai_prompt: openaiPrompt || null,
+        member_summary_provider: memberSummaryProvider,
       };
 
       const hadAnthropicInPayload = !!(
@@ -1138,9 +1295,9 @@ export default function SettingsPage() {
       }
 
       await loadSettings();
-      alert("AI settings saved successfully!");
+      alert("API and summary settings saved successfully!");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save OpenAI settings");
+      setError(err instanceof Error ? err.message : "Failed to save API settings");
       console.error("Save error:", err);
     }
   };
@@ -1171,12 +1328,13 @@ export default function SettingsPage() {
           ? anthropicApiKey.trim()
           : undefined;
 
-      const settingsToSave: any = {
+      const settingsToSave: Record<string, unknown> = {
         church_name: churchName || null,
         openai_model: openaiModel || "gpt-4o-mini",
         transcription_method: transcriptionMethod,
         openai_prompt: openaiPrompt || null,
         claude_model: claudeModel || "claude-sonnet-4-20250514",
+        member_summary_provider: memberSummaryProvider,
       };
 
       // Only include API key if it's been changed (not masked and not empty)
@@ -1339,7 +1497,9 @@ export default function SettingsPage() {
       <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6 lg:px-8">
         <div className="mb-8">
           <h2 className="text-3xl font-semibold tracking-tight text-slate-900">Settings</h2>
-          <p className="mt-1 text-slate-600">Church branding, transcription, and speakers</p>
+          <p className="mt-1 text-slate-600">
+            Church branding, APIs for transcription and summaries, then speakers
+          </p>
         </div>
 
         {/* Error Display */}
@@ -1398,177 +1558,56 @@ export default function SettingsPage() {
             </div>
           </div>
 
-          {/* Claude (Anthropic) — member summaries prefer Claude when set */}
+          <ApiQuickGuide
+            expanded={apiGuideExpanded}
+            onToggle={() => setApiGuideExpanded((e) => !e)}
+          />
+
           <div className="rounded-2xl border border-slate-200/80 bg-white p-6 shadow-sm">
-            <h3 className="text-xl font-semibold mb-4">Claude (Anthropic)</h3>
-            <div className="space-y-4">
-              {(() => {
-                const hasAnthropic =
-                  settings.anthropic_api_key &&
-                  settings.anthropic_api_key.length > 12 &&
-                  settings.anthropic_api_key.includes("...");
-                return hasAnthropic ? (
-                  <div className="bg-green-50 border border-green-200 rounded-lg p-4 mb-4">
-                    <p className="text-sm text-green-800 font-semibold">
-                      Anthropic API key configured
-                    </p>
-                    <p className="text-sm text-green-700 mt-1">
-                      Member summaries and Word export use Claude (this key takes priority over OpenAI for summaries).
-                    </p>
-                  </div>
-                ) : (
-                  <div className="bg-slate-50 border border-slate-200 rounded-lg p-4 mb-4">
-                    <p className="text-sm text-slate-800 font-semibold mb-1">Optional</p>
-                    <p className="text-sm text-slate-700">
-                      Add an Anthropic API key to generate member summaries with Claude. If you leave this empty,
-                      summaries use your OpenAI key when that is configured.
-                    </p>
-                  </div>
-                );
-              })()}
-
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-2">
-                  Anthropic API key
-                </label>
-                <input
-                  type="password"
-                  value={anthropicApiKey}
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    if (v.includes("...")) return;
-                    setAnthropicApiKey(v);
-                  }}
-                  placeholder={
-                    settings.anthropic_api_key
-                      ? "Enter new key to update (current key is saved)"
-                      : "sk-ant-api03-..."
-                  }
-                  autoComplete="off"
-                  data-form-type="other"
-                  data-lpignore="true"
-                  name="anthropic-api-key"
-                  id="anthropic-api-key"
-                  className="w-full px-3 py-2 border border-slate-300 rounded focus:ring-2 focus:ring-teal-500/40 font-mono text-sm"
-                />
-                <p className="mt-1 text-xs text-slate-500">
-                  {settings.anthropic_api_key
-                    ? "Key is stored for your account only. Enter a new key to replace it, or leave blank to keep the current key."
-                    : "From the Anthropic Console. Used for member-facing summaries when set."}
-                </p>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-2">
-                  Claude model
-                </label>
-                <select
-                  value={
-                    CLAUDE_MODEL_PRESET_IDS.has(claudeModel)
-                      ? claudeModel
-                      : "__custom__"
-                  }
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    if (v === "__custom__") {
-                      setClaudeModel("");
-                    } else {
-                      setClaudeModel(v);
-                    }
-                  }}
-                  className="w-full px-3 py-2 border border-slate-300 rounded focus:ring-2 focus:ring-teal-500/40 text-sm"
-                >
-                  {CLAUDE_MODEL_CHOICES.map(({ value, label }) => (
-                    <option key={value} value={value}>
-                      {label}
-                    </option>
-                  ))}
-                  <option value="__custom__">Custom model ID…</option>
-                </select>
-                {!CLAUDE_MODEL_PRESET_IDS.has(claudeModel) && (
-                  <input
-                    type="text"
-                    value={claudeModel}
-                    onChange={(e) => setClaudeModel(e.target.value.trim())}
-                    placeholder="e.g. claude-sonnet-4-20250514"
-                    className="mt-2 w-full px-3 py-2 border border-slate-300 rounded focus:ring-2 focus:ring-teal-500/40 font-mono text-sm"
-                  />
-                )}
-                <p className="mt-1 text-xs text-slate-500">
-                  Used for member summaries and section summaries when Claude is selected. Choose a preset or enter any model ID your Anthropic account supports.
-                </p>
-
-                <div className="mt-3 overflow-hidden rounded-lg border border-slate-200 bg-slate-50">
-                  <p className="border-b border-slate-200 bg-slate-100/90 px-3 py-2 text-xs font-semibold text-slate-900">
-                    Claude model comparison (like choosing in ChatGPT)
-                    <span className="ml-1 font-normal text-slate-600">
-                      — click a row to select that model
-                    </span>
-                  </p>
-                  <div className="overflow-x-auto">
-                    <table className="w-full min-w-[520px] text-left text-xs text-slate-800">
-                      <thead>
-                        <tr className="border-b border-slate-200 bg-white/80 text-slate-600">
-                          <th className="px-3 py-2 font-semibold">Model</th>
-                          <th className="px-3 py-2 font-semibold">Best for</th>
-                          <th className="px-3 py-2 font-semibold">Speed</th>
-                          <th className="px-3 py-2 font-semibold">Quality</th>
-                          <th className="px-3 py-2 font-semibold">Relative cost</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-200 bg-white/60">
-                        {CLAUDE_MODEL_CHOICES.map((row) => (
-                          <tr
-                            key={row.value}
-                            role="button"
-                            tabIndex={0}
-                            onClick={() => setClaudeModel(row.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter" || e.key === " ") {
-                                e.preventDefault();
-                                setClaudeModel(row.value);
-                              }
-                            }}
-                            className={
-                              claudeModel === row.value
-                                ? "cursor-pointer bg-teal-50/90 ring-1 ring-inset ring-teal-200/80"
-                                : "cursor-pointer hover:bg-slate-50/50"
-                            }
-                          >
-                            <td className="px-3 py-2 font-mono text-[11px] text-slate-900">
-                              {row.label.split(" — ")[0]}
-                            </td>
-                            <td className="px-3 py-2">{row.bestFor}</td>
-                            <td className="px-3 py-2 whitespace-nowrap">{row.speed}</td>
-                            <td className="px-3 py-2 whitespace-nowrap">{row.quality}</td>
-                            <td className="px-3 py-2 whitespace-nowrap">{row.cost}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                  <ul className="space-y-1 border-t border-slate-200 px-3 py-2 text-xs text-slate-700">
-                    <li>
-                      <span className="font-semibold text-slate-800">Start here:</span>{" "}
-                      <strong>Claude Sonnet 4</strong> is the usual pick for sermon summaries and Word export.
-                    </li>
-                    <li>
-                      <span className="font-semibold text-slate-800">Tight budget:</span> choose{" "}
-                      <strong>Haiku</strong> for speed and lowest cost; quality is still solid for summaries.
-                    </li>
-                    <li>
-                      <span className="font-semibold text-slate-800">Max quality:</span>{" "}
-                      <strong>Opus 4</strong> when you need the strongest reasoning and polish (higher cost).
-                    </li>
-                  </ul>
-                </div>
-              </div>
+            <h3 className="text-lg font-semibold text-slate-900">Member summaries use</h3>
+            <p className="mt-1 text-sm text-slate-600">
+              Pick which API writes the bulletin-style summary. Whisper and segment detection still use your OpenAI key
+              when you choose that transcription mode.
+            </p>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => setMemberSummaryProvider("openai")}
+                className={`min-w-[140px] rounded-xl border-2 px-4 py-3 text-left text-sm font-semibold transition-colors ${
+                  memberSummaryProvider === "openai"
+                    ? "border-teal-600 bg-teal-50 text-teal-950"
+                    : "border-slate-200 bg-slate-50 text-slate-800 hover:border-slate-300"
+                }`}
+              >
+                OpenAI
+                <span className="mt-1 block text-xs font-normal text-slate-600">
+                  Uses the ChatGPT model below (requires OpenAI key).
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setMemberSummaryProvider("anthropic")}
+                className={`min-w-[140px] rounded-xl border-2 px-4 py-3 text-left text-sm font-semibold transition-colors ${
+                  memberSummaryProvider === "anthropic"
+                    ? "border-teal-600 bg-teal-50 text-teal-950"
+                    : "border-slate-200 bg-slate-50 text-slate-800 hover:border-slate-300"
+                }`}
+              >
+                Claude
+                <span className="mt-1 block text-xs font-normal text-slate-600">
+                  Uses Anthropic key + Claude model (section below).
+                </span>
+              </button>
             </div>
+            <p className="mt-3 text-xs text-slate-600">
+              If your choice is missing a key, the app falls back to the other provider when possible. Save at the bottom
+              of the Anthropic section to store this with your keys.
+            </p>
           </div>
 
-          {/* OpenAI Settings Section */}
+          {/* OpenAI — recording, segments, and summaries when no Anthropic key */}
           <div className="rounded-2xl border border-slate-200/80 bg-white p-6 shadow-sm">
-            <h3 className="text-xl font-semibold mb-4">OpenAI Settings</h3>
+            <h3 className="text-xl font-semibold mb-4">OpenAI — recording &amp; fallback summaries</h3>
             <div className="space-y-4">
               {(() => {
                 // Check if API key exists (even if masked, it will be present and start with "sk-")
@@ -1582,7 +1621,8 @@ export default function SettingsPage() {
                       ✅ OpenAI API Key Configured
                     </p>
                     <p className="text-sm text-green-700 mt-1">
-                      OpenAI transcription, segment auto-detect, and (if no Claude key) member summaries are available.
+                      Whisper (if selected), segment auto-detect, and member summaries when &quot;OpenAI&quot; is selected
+                      above.
                     </p>
                   </div>
                 ) : (
@@ -1591,16 +1631,18 @@ export default function SettingsPage() {
                       ⚠️ OpenAI API Key Missing
                     </p>
                     <p className="text-sm text-yellow-700">
-                      OpenAI Whisper transcription and automatic segment detection require an OpenAI API key.
-                      Member summaries can still use Claude if you configure an Anthropic key above.
+                      OpenAI Whisper transcription and automatic segment detection require an OpenAI API key. You can
+                      still generate member summaries with Claude if you choose Claude above and add an Anthropic key
+                      below.
                     </p>
                   </div>
                 );
               })()}
               
               <p className="text-sm text-slate-600">
-                Configure your OpenAI API key for Whisper transcription, segment detection, and for summaries when no Anthropic key is set.
-                <strong className="text-slate-800"> You provide your own API keys; they are stored for your account only.</strong>
+                Configure your OpenAI API key for Whisper transcription and segment detection, and for member summaries
+                when you select OpenAI above.
+                <strong className="text-slate-800"> Keys are stored for your account only.</strong>
               </p>
               
               <div>
@@ -1760,12 +1802,42 @@ export default function SettingsPage() {
                       <strong>GPT-4o</strong> or <strong>GPT-4 Turbo</strong> when you need stronger reasoning (higher cost).
                     </li>
                   </ul>
+                  <p className="border-t border-slate-200 px-3 py-2 text-[11px] text-slate-600">
+                    See also{" "}
+                    <a
+                      href="https://chat.lmsys.org/"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-teal-700 underline"
+                    >
+                      LMSYS Arena
+                    </a>
+                    ,{" "}
+                    <a
+                      href="https://artificialanalysis.ai/"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-teal-700 underline"
+                    >
+                      Artificial Analysis
+                    </a>
+                    , and{" "}
+                    <a
+                      href="https://platform.openai.com/docs/models"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-teal-700 underline"
+                    >
+                      OpenAI model IDs
+                    </a>
+                    .
+                  </p>
                 </div>
               </div>
 
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-2">
-                  Custom OpenAI Prompt
+                  Custom instructions (member summaries)
                 </label>
                 <textarea
                   value={openaiPrompt}
@@ -1775,14 +1847,14 @@ export default function SettingsPage() {
                       setOpenaiPrompt(newValue);
                     }
                   }}
-                  placeholder="Enter a custom prompt to instruct OpenAI on how to process transcripts (e.g., 'Focus on key biblical themes and practical applications')"
+                  placeholder="Optional. Extra instructions for generating the member summary (e.g. tone, sections, what to emphasize)."
                   rows={4}
                   maxLength={5000}
                   className="w-full px-3 py-2 border border-slate-300 rounded focus:ring-2 focus:ring-teal-500/40"
                 />
                 <div className="flex justify-between items-center mt-1">
                   <p className="text-xs text-slate-500">
-                    Customize how OpenAI processes your transcripts. Leave blank to use default prompts.
+                    Applies whether summaries run on OpenAI or Claude (same field). Leave blank for defaults.
                   </p>
                   <p className="text-xs text-slate-400">
                     {openaiPrompt.length}/5000 characters
@@ -1848,54 +1920,256 @@ export default function SettingsPage() {
                   );
                 })()}
               </div>
+            </div>
+          </div>
 
-              <div className="flex gap-2">
-                <button
-                  onClick={handleSaveOpenAISettings}
-                  className="px-6 py-2 bg-teal-600 text-white rounded-lg hover:bg-teal-700"
+          {/* Claude — optional; used when member summaries = Claude */}
+          <div className="rounded-2xl border border-slate-200/80 bg-white p-6 shadow-sm">
+            <h3 className="text-xl font-semibold mb-1">Claude (Anthropic) — optional</h3>
+            <p className="mb-4 text-sm text-slate-600">
+              Required only if you choose <strong>Claude</strong> for member summaries above. OpenAI above is still used
+              for Whisper and segments when you select them.
+            </p>
+            <div className="space-y-4">
+              {(() => {
+                const hasAnthropic =
+                  settings.anthropic_api_key &&
+                  settings.anthropic_api_key.length > 12 &&
+                  settings.anthropic_api_key.includes("...");
+                return hasAnthropic ? (
+                  <div className="mb-4 rounded-lg border border-green-200 bg-green-50 p-4">
+                    <p className="text-sm font-semibold text-green-800">Anthropic API key on file</p>
+                    <p className="mt-1 text-sm text-green-700">
+                      Member summaries use Claude when <strong>Claude</strong> is selected above (otherwise OpenAI).
+                    </p>
+                  </div>
+                ) : (
+                  <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50 p-4">
+                    <p className="mb-1 text-sm font-semibold text-slate-800">No Anthropic key yet</p>
+                    <p className="text-sm text-slate-700">
+                      Add a key below to use Claude for summaries, or keep <strong>OpenAI</strong> selected above
+                      and use only the OpenAI section.
+                    </p>
+                  </div>
+                );
+              })()}
+
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">Anthropic API key</label>
+                <input
+                  type="password"
+                  value={anthropicApiKey}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (v.includes("...")) return;
+                    setAnthropicApiKey(v);
+                  }}
+                  placeholder={
+                    settings.anthropic_api_key
+                      ? "Enter new key to update (current key is saved)"
+                      : "sk-ant-api03-..."
+                  }
+                  autoComplete="off"
+                  data-form-type="other"
+                  data-lpignore="true"
+                  name="anthropic-api-key"
+                  id="anthropic-api-key"
+                  className="w-full rounded border border-slate-300 px-3 py-2 font-mono text-sm focus:ring-2 focus:ring-teal-500/40"
+                />
+                <p className="mt-1 text-xs text-slate-500">
+                  {settings.anthropic_api_key
+                    ? "Key is stored for your account only. Enter a new key to replace it, or leave blank to keep the current key."
+                    : "From the Anthropic Console. Used for member-facing summaries when set."}
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">Claude model</label>
+                <select
+                  value={CLAUDE_MODEL_PRESET_IDS.has(claudeModel) ? claudeModel : "__custom__"}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (v === "__custom__") {
+                      setClaudeModel("");
+                    } else {
+                      setClaudeModel(v);
+                    }
+                  }}
+                  className="w-full rounded border border-slate-300 px-3 py-2 text-sm focus:ring-2 focus:ring-teal-500/40"
                 >
-                  Save AI settings
+                  {CLAUDE_MODEL_CHOICES.map(({ value, label }) => (
+                    <option key={value} value={value}>
+                      {label}
+                    </option>
+                  ))}
+                  <option value="__custom__">Custom model ID…</option>
+                </select>
+                {!CLAUDE_MODEL_PRESET_IDS.has(claudeModel) && (
+                  <input
+                    type="text"
+                    value={claudeModel}
+                    onChange={(e) => setClaudeModel(e.target.value.trim())}
+                    placeholder="e.g. claude-sonnet-4-20250514"
+                    className="mt-2 w-full rounded border border-slate-300 px-3 py-2 font-mono text-sm focus:ring-2 focus:ring-teal-500/40"
+                  />
+                )}
+                <p className="mt-1 text-xs text-slate-500">
+                  Used for member summaries when Claude is selected. Choose a preset or enter any model ID your account
+                  supports.
+                </p>
+
+                <div className="mt-3 overflow-hidden rounded-lg border border-slate-200 bg-slate-50">
+                  <p className="border-b border-slate-200 bg-slate-100/90 px-3 py-2 text-xs font-semibold text-slate-900">
+                    Claude model comparison
+                    <span className="ml-1 font-normal text-slate-600">— click a row to select</span>
+                  </p>
+                  <div className="overflow-x-auto">
+                    <table className="w-full min-w-[520px] text-left text-xs text-slate-800">
+                      <thead>
+                        <tr className="border-b border-slate-200 bg-white/80 text-slate-600">
+                          <th className="px-3 py-2 font-semibold">Model</th>
+                          <th className="px-3 py-2 font-semibold">Best for</th>
+                          <th className="px-3 py-2 font-semibold">Speed</th>
+                          <th className="px-3 py-2 font-semibold">Quality</th>
+                          <th className="px-3 py-2 font-semibold">Relative cost</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-200 bg-white/60">
+                        {CLAUDE_MODEL_CHOICES.map((row) => (
+                          <tr
+                            key={row.value}
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => setClaudeModel(row.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" || e.key === " ") {
+                                e.preventDefault();
+                                setClaudeModel(row.value);
+                              }
+                            }}
+                            className={
+                              claudeModel === row.value
+                                ? "cursor-pointer bg-teal-50/90 ring-1 ring-inset ring-teal-200/80"
+                                : "cursor-pointer hover:bg-slate-50/50"
+                            }
+                          >
+                            <td className="px-3 py-2 font-mono text-[11px] text-slate-900">
+                              {row.label.split(" — ")[0]}
+                            </td>
+                            <td className="px-3 py-2">{row.bestFor}</td>
+                            <td className="px-3 py-2 whitespace-nowrap">{row.speed}</td>
+                            <td className="px-3 py-2 whitespace-nowrap">{row.quality}</td>
+                            <td className="px-3 py-2 whitespace-nowrap">{row.cost}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <ul className="space-y-1 border-t border-slate-200 px-3 py-2 text-xs text-slate-700">
+                    <li>
+                      <span className="font-semibold text-slate-800">Start here:</span>{" "}
+                      <strong>Claude Sonnet 4</strong> for sermon summaries in most cases.
+                    </li>
+                    <li>
+                      <span className="font-semibold text-slate-800">Tight budget:</span>{" "}
+                      <strong>Haiku</strong> — fast and lowest cost.
+                    </li>
+                    <li>
+                      <span className="font-semibold text-slate-800">Max quality:</span>{" "}
+                      <strong>Opus 4</strong> — higher cost.
+                    </li>
+                  </ul>
+                  <p className="border-t border-slate-200 px-3 py-2 text-[11px] text-slate-600">
+                    See also{" "}
+                    <a
+                      href="https://chat.lmsys.org/"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-teal-700 underline"
+                    >
+                      LMSYS Arena
+                    </a>
+                    ,{" "}
+                    <a
+                      href="https://artificialanalysis.ai/"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-teal-700 underline"
+                    >
+                      Artificial Analysis
+                    </a>
+                    , and{" "}
+                    <a
+                      href="https://docs.anthropic.com/en/docs/about-claude/models"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-teal-700 underline"
+                    >
+                      Anthropic model IDs
+                    </a>
+                    .
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-6 flex flex-wrap gap-2 border-t border-slate-200 pt-6">
+                <button
+                  type="button"
+                  onClick={handleSaveAiSettings}
+                  className="rounded-lg bg-teal-600 px-6 py-2.5 font-semibold text-white shadow-sm hover:bg-teal-700"
+                >
+                  Save API &amp; summary settings
                 </button>
                 <button
+                  type="button"
                   onClick={testOpenAIConnection}
                   disabled={testingOpenAI}
-                  className="px-6 py-2 rounded-lg bg-teal-600 text-white hover:bg-teal-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="rounded-lg bg-slate-100 px-6 py-2.5 font-semibold text-slate-800 ring-1 ring-slate-300 hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {testingOpenAI ? "Testing..." : "Test Connection"}
+                  {testingOpenAI ? "Testing…" : "Test OpenAI connection"}
                 </button>
               </div>
-              
+              <p className="mt-3 text-xs text-slate-600">
+                Saves OpenAI and Anthropic keys, both models, transcription mode, custom summary instructions, and
+                your OpenAI vs Claude choice for member summaries.
+              </p>
+
               {openAITestResult && (
-                <div className={`mt-4 p-4 rounded-lg ${
-                  openAITestResult.connected 
-                    ? "bg-green-50 border border-green-200" 
-                    : "bg-red-50 border border-red-200"
-                }`}>
-                  <p className={`font-semibold ${
-                    openAITestResult.connected ? "text-green-800" : "text-red-800"
-                  }`}>
+                <div
+                  className={`mt-4 rounded-lg p-4 ${
+                    openAITestResult.connected
+                      ? "border border-green-200 bg-green-50"
+                      : "border border-red-200 bg-red-50"
+                  }`}
+                >
+                  <p
+                    className={`font-semibold ${
+                      openAITestResult.connected ? "text-green-800" : "text-red-800"
+                    }`}
+                  >
                     {openAITestResult.connected ? "✅ Connected!" : "❌ Not Connected"}
                   </p>
                   {openAITestResult.message && (
-                    <p className={`text-sm mt-2 ${
-                      openAITestResult.connected ? "text-green-700" : "text-red-700"
-                    }`}>
+                    <p
+                      className={`mt-2 text-sm ${
+                        openAITestResult.connected ? "text-green-700" : "text-red-700"
+                      }`}
+                    >
                       {openAITestResult.message}
                     </p>
                   )}
                   {openAITestResult.connected && openAITestResult.availableModels && (
                     <div className="mt-2">
-                      <p className="text-sm text-green-700 font-semibold">Available Models:</p>
-                      <p className="text-xs text-green-600 mt-1">
+                      <p className="text-sm font-semibold text-green-700">Available Models:</p>
+                      <p className="mt-1 text-xs text-green-600">
                         {openAITestResult.availableModels.slice(0, 10).join(", ")}
-                        {openAITestResult.availableModels.length > 10 && ` (+${openAITestResult.availableModels.length - 10} more)`}
+                        {openAITestResult.availableModels.length > 10 &&
+                          ` (+${openAITestResult.availableModels.length - 10} more)`}
                       </p>
                     </div>
                   )}
                   {openAITestResult.error && (
-                    <p className="text-sm mt-2 text-red-700">
-                      Error: {openAITestResult.error}
-                    </p>
+                    <p className="mt-2 text-sm text-red-700">Error: {openAITestResult.error}</p>
                   )}
                 </div>
               )}
@@ -2118,7 +2392,8 @@ export default function SettingsPage() {
               <div>
                 <h3 className="text-xl font-semibold mb-2">Save All Settings</h3>
                 <p className="text-sm text-slate-600">
-                  Save all your settings at once, including church name, OpenAI settings, and transcription preferences.
+                  Saves church name together with all API keys, summary provider choice, models, transcription, and
+                  custom instructions.
                 </p>
               </div>
               <button

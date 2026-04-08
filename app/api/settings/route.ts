@@ -184,6 +184,7 @@ export async function PUT(request: NextRequest) {
       openai_prompt,
       anthropic_api_key,
       claude_model,
+      member_summary_provider,
     } = body;
     
     // CRITICAL: Always set user_id to the authenticated user's ID
@@ -208,6 +209,11 @@ export async function PUT(request: NextRequest) {
     }
     if (openai_model !== undefined) updateData.openai_model = openai_model;
     if (transcription_method !== undefined) updateData.transcription_method = transcription_method;
+    if (member_summary_provider !== undefined) {
+      const v = String(member_summary_provider).trim().toLowerCase();
+      updateData.member_summary_provider =
+        v === "openai" || v === "anthropic" ? v : null;
+    }
     // Only include openai_prompt if it's provided
     // Note: If you get a PGRST204 error about this column, PostgREST's schema cache needs to refresh
     // We'll try to save it, but if it fails with PGRST204, we'll retry without it
@@ -278,6 +284,9 @@ export async function PUT(request: NextRequest) {
           ) {
             migrationMessage =
               "The Claude (Anthropic) columns are missing. In the Supabase SQL Editor, run supabase/migrations/017_add_anthropic_settings.sql (adds anthropic_api_key and claude_model to user_settings). Then wait a few seconds for the schema cache to refresh.";
+          } else if (errorText.includes("member_summary_provider")) {
+            migrationMessage =
+              "The member_summary_provider column is missing. Run supabase/migrations/019_add_member_summary_provider.sql in the Supabase SQL Editor, then wait for the schema cache to refresh.";
           }
           
           return NextResponse.json(
@@ -338,6 +347,9 @@ export async function PUT(request: NextRequest) {
           ) {
             migrationMessage =
               "The Claude (Anthropic) columns are missing. In the Supabase SQL Editor, run supabase/migrations/017_add_anthropic_settings.sql (adds anthropic_api_key and claude_model to user_settings). Then wait a few seconds for the schema cache to refresh.";
+          } else if (errorText.includes("member_summary_provider")) {
+            migrationMessage =
+              "The member_summary_provider column is missing. Run supabase/migrations/019_add_member_summary_provider.sql in the Supabase SQL Editor, then wait for the schema cache to refresh.";
           }
           
           return NextResponse.json(
