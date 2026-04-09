@@ -392,7 +392,9 @@ export default function SettingsPage() {
   const [taggedFeatureAvailable, setTaggedFeatureAvailable] = useState<boolean | null>(null);
   const [selectedSpeakers, setSelectedSpeakers] = useState<Set<string>>(new Set());
   const [speakersSectionExpanded, setSpeakersSectionExpanded] = useState(false);
-  const [apiGuideExpanded, setApiGuideExpanded] = useState(true);
+  const [apiGuideExpanded, setApiGuideExpanded] = useState(false);
+  const [openaiModelsExpanded, setOpenaiModelsExpanded] = useState(false);
+  const [claudeModelsExpanded, setClaudeModelsExpanded] = useState(false);
   /** Which API runs member summaries (saved as member_summary_provider). */
   const [memberSummaryProvider, setMemberSummaryProvider] = useState<"openai" | "anthropic">("openai");
 
@@ -1721,7 +1723,7 @@ export default function SettingsPage() {
         <div className="mb-8">
           <h2 className="text-3xl font-semibold tracking-tight text-slate-900">Settings</h2>
           <p className="mt-1 text-slate-600">
-            Church branding, APIs for transcription and summaries, then speakers
+            Keep it simple: set branding, pick your summary provider, then save.
           </p>
         </div>
 
@@ -2001,111 +2003,117 @@ export default function SettingsPage() {
                     : "Default OpenAI model IDs. Test connection to load the list your key supports."}
                 </p>
 
-                <div className="mt-3 overflow-hidden rounded-lg border border-slate-200 bg-slate-50">
-                  <p className="border-b border-slate-200 bg-slate-100/90 px-3 py-2 text-xs font-semibold text-slate-900">
-                    Member summary model comparison (OpenAI)
-                    <span className="ml-1 font-normal text-slate-600">
-                      — click a row to select that model
-                    </span>
-                  </p>
-                  <div className="overflow-x-auto">
-                    <table className="w-full min-w-[520px] text-left text-xs text-slate-800">
-                      <thead>
-                        <tr className="border-b border-slate-200 bg-white/80 text-slate-600">
-                          <th className="px-3 py-2 font-semibold">Model</th>
-                          <th className="px-3 py-2 font-semibold">Best for</th>
-                          <th className="px-3 py-2 font-semibold">Speed</th>
-                          <th className="px-3 py-2 font-semibold">Quality</th>
-                          <th className="px-3 py-2 font-semibold">Relative cost</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-200 bg-white/60">
-                        {openaiChartRows.map((row) => {
-                          const canSelect =
-                            availableModels.length === 0 ||
-                            availableModels.includes(row.value);
-                          return (
-                            <tr
-                              key={row.value}
-                              role="button"
-                              tabIndex={canSelect ? 0 : -1}
-                              onClick={() => {
-                                if (canSelect) setMemberSummaryOpenaiModel(row.value);
-                              }}
-                              onKeyDown={(e) => {
-                                if (!canSelect) return;
-                                if (e.key === "Enter" || e.key === " ") {
-                                  e.preventDefault();
-                                  setMemberSummaryOpenaiModel(row.value);
-                                }
-                              }}
-                              className={
-                                memberSummaryOpenaiModel === row.value
-                                  ? canSelect
-                                    ? "cursor-pointer bg-teal-50/90 ring-1 ring-inset ring-teal-200/80"
-                                    : "bg-teal-50/90 ring-1 ring-inset ring-teal-200/80 opacity-90"
-                                  : canSelect
-                                    ? "cursor-pointer hover:bg-slate-50/50"
-                                    : "cursor-not-allowed opacity-60"
-                              }
-                            >
-                              <td className="px-3 py-2 font-mono text-[11px] text-slate-900">
-                                {row.label}
-                              </td>
-                              <td className="px-3 py-2">{row.bestFor}</td>
-                              <td className="px-3 py-2 whitespace-nowrap">{row.speed}</td>
-                              <td className="px-3 py-2 whitespace-nowrap">{row.quality}</td>
-                              <td className="px-3 py-2 whitespace-nowrap">{row.cost}</td>
+                <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50">
+                  <button
+                    type="button"
+                    onClick={() => setOpenaiModelsExpanded((v) => !v)}
+                    className="flex w-full items-center justify-between px-3 py-2 text-left text-xs font-semibold text-slate-900"
+                  >
+                    <span>Advanced: OpenAI model comparison</span>
+                    <span aria-hidden>{openaiModelsExpanded ? "▼" : "▶"}</span>
+                  </button>
+                  {openaiModelsExpanded && (
+                    <>
+                      <div className="overflow-x-auto border-t border-slate-200">
+                        <table className="w-full min-w-[520px] text-left text-xs text-slate-800">
+                          <thead>
+                            <tr className="border-b border-slate-200 bg-white/80 text-slate-600">
+                              <th className="px-3 py-2 font-semibold">Model</th>
+                              <th className="px-3 py-2 font-semibold">Best for</th>
+                              <th className="px-3 py-2 font-semibold">Speed</th>
+                              <th className="px-3 py-2 font-semibold">Quality</th>
+                              <th className="px-3 py-2 font-semibold">Relative cost</th>
                             </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                  <ul className="space-y-1 border-t border-slate-200 px-3 py-2 text-xs text-slate-700">
-                    <li>
-                      <span className="font-semibold text-slate-800">Start here:</span>{" "}
-                      <strong>GPT-4o mini</strong> is usually the best balance for summaries and transcription.
-                    </li>
-                    <li>
-                      <span className="font-semibold text-slate-800">Tight budget:</span>{" "}
-                      <strong>GPT-3.5 Turbo</strong> for the lowest cost; quality is still fine for many tasks.
-                    </li>
-                    <li>
-                      <span className="font-semibold text-slate-800">Max quality:</span>{" "}
-                      <strong>GPT-4o</strong> or <strong>GPT-4 Turbo</strong> when you need stronger reasoning (higher cost).
-                    </li>
-                  </ul>
-                  <p className="border-t border-slate-200 px-3 py-2 text-[11px] text-slate-600">
-                    See also{" "}
-                    <a
-                      href="https://chat.lmsys.org/"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-teal-700 underline"
-                    >
-                      LMSYS Arena
-                    </a>
-                    ,{" "}
-                    <a
-                      href="https://artificialanalysis.ai/"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-teal-700 underline"
-                    >
-                      Artificial Analysis
-                    </a>
-                    , and{" "}
-                    <a
-                      href="https://platform.openai.com/docs/models"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-teal-700 underline"
-                    >
-                      OpenAI model IDs
-                    </a>
-                    .
-                  </p>
+                          </thead>
+                          <tbody className="divide-y divide-slate-200 bg-white/60">
+                            {openaiChartRows.map((row) => {
+                              const canSelect =
+                                availableModels.length === 0 ||
+                                availableModels.includes(row.value);
+                              return (
+                                <tr
+                                  key={row.value}
+                                  role="button"
+                                  tabIndex={canSelect ? 0 : -1}
+                                  onClick={() => {
+                                    if (canSelect) setMemberSummaryOpenaiModel(row.value);
+                                  }}
+                                  onKeyDown={(e) => {
+                                    if (!canSelect) return;
+                                    if (e.key === "Enter" || e.key === " ") {
+                                      e.preventDefault();
+                                      setMemberSummaryOpenaiModel(row.value);
+                                    }
+                                  }}
+                                  className={
+                                    memberSummaryOpenaiModel === row.value
+                                      ? canSelect
+                                        ? "cursor-pointer bg-teal-50/90 ring-1 ring-inset ring-teal-200/80"
+                                        : "bg-teal-50/90 ring-1 ring-inset ring-teal-200/80 opacity-90"
+                                      : canSelect
+                                        ? "cursor-pointer hover:bg-slate-50/50"
+                                        : "cursor-not-allowed opacity-60"
+                                  }
+                                >
+                                  <td className="px-3 py-2 font-mono text-[11px] text-slate-900">
+                                    {row.label}
+                                  </td>
+                                  <td className="px-3 py-2">{row.bestFor}</td>
+                                  <td className="px-3 py-2 whitespace-nowrap">{row.speed}</td>
+                                  <td className="px-3 py-2 whitespace-nowrap">{row.quality}</td>
+                                  <td className="px-3 py-2 whitespace-nowrap">{row.cost}</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                      <ul className="space-y-1 border-t border-slate-200 px-3 py-2 text-xs text-slate-700">
+                        <li>
+                          <span className="font-semibold text-slate-800">Start here:</span>{" "}
+                          <strong>GPT-4o mini</strong> is usually the best balance for summaries and transcription.
+                        </li>
+                        <li>
+                          <span className="font-semibold text-slate-800">Tight budget:</span>{" "}
+                          <strong>GPT-3.5 Turbo</strong> for the lowest cost; quality is still fine for many tasks.
+                        </li>
+                        <li>
+                          <span className="font-semibold text-slate-800">Max quality:</span>{" "}
+                          <strong>GPT-4o</strong> or <strong>GPT-4 Turbo</strong> when you need stronger reasoning (higher cost).
+                        </li>
+                      </ul>
+                      <p className="border-t border-slate-200 px-3 py-2 text-[11px] text-slate-600">
+                        See also{" "}
+                        <a
+                          href="https://chat.lmsys.org/"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-teal-700 underline"
+                        >
+                          LMSYS Arena
+                        </a>
+                        ,{" "}
+                        <a
+                          href="https://artificialanalysis.ai/"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-teal-700 underline"
+                        >
+                          Artificial Analysis
+                        </a>
+                        , and{" "}
+                        <a
+                          href="https://platform.openai.com/docs/models"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-teal-700 underline"
+                        >
+                          OpenAI model IDs
+                        </a>
+                        .
+                      </p>
+                    </>
+                  )}
                 </div>
               </div>
 
@@ -2313,97 +2321,105 @@ export default function SettingsPage() {
                   supports.
                 </p>
 
-                <div className="mt-3 overflow-hidden rounded-lg border border-slate-200 bg-slate-50">
-                  <p className="border-b border-slate-200 bg-slate-100/90 px-3 py-2 text-xs font-semibold text-slate-900">
-                    Claude model comparison
-                    <span className="ml-1 font-normal text-slate-600">— click a row to select</span>
-                  </p>
-                  <div className="overflow-x-auto">
-                    <table className="w-full min-w-[520px] text-left text-xs text-slate-800">
-                      <thead>
-                        <tr className="border-b border-slate-200 bg-white/80 text-slate-600">
-                          <th className="px-3 py-2 font-semibold">Model</th>
-                          <th className="px-3 py-2 font-semibold">Best for</th>
-                          <th className="px-3 py-2 font-semibold">Speed</th>
-                          <th className="px-3 py-2 font-semibold">Quality</th>
-                          <th className="px-3 py-2 font-semibold">Relative cost</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-200 bg-white/60">
-                        {CLAUDE_MODEL_CHOICES.map((row) => (
-                          <tr
-                            key={row.value}
-                            role="button"
-                            tabIndex={0}
-                            onClick={() => setClaudeModel(row.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter" || e.key === " ") {
-                                e.preventDefault();
-                                setClaudeModel(row.value);
-                              }
-                            }}
-                            className={
-                              claudeModel === row.value
-                                ? "cursor-pointer bg-teal-50/90 ring-1 ring-inset ring-teal-200/80"
-                                : "cursor-pointer hover:bg-slate-50/50"
-                            }
-                          >
-                            <td className="px-3 py-2 font-mono text-[11px] text-slate-900">
-                              {row.label.split(" — ")[0]}
-                            </td>
-                            <td className="px-3 py-2">{row.bestFor}</td>
-                            <td className="px-3 py-2 whitespace-nowrap">{row.speed}</td>
-                            <td className="px-3 py-2 whitespace-nowrap">{row.quality}</td>
-                            <td className="px-3 py-2 whitespace-nowrap">{row.cost}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                  <ul className="space-y-1 border-t border-slate-200 px-3 py-2 text-xs text-slate-700">
-                    <li>
-                      <span className="font-semibold text-slate-800">Start here:</span>{" "}
-                      <strong>Claude Sonnet 4</strong> for sermon summaries in most cases.
-                    </li>
-                    <li>
-                      <span className="font-semibold text-slate-800">Tight budget:</span>{" "}
-                      <strong>Haiku</strong> — fast and lowest cost.
-                    </li>
-                    <li>
-                      <span className="font-semibold text-slate-800">Max quality:</span>{" "}
-                      <strong>Opus 4</strong> — higher cost.
-                    </li>
-                  </ul>
-                  <p className="border-t border-slate-200 px-3 py-2 text-[11px] text-slate-600">
-                    See also{" "}
-                    <a
-                      href="https://chat.lmsys.org/"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-teal-700 underline"
-                    >
-                      LMSYS Arena
-                    </a>
-                    ,{" "}
-                    <a
-                      href="https://artificialanalysis.ai/"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-teal-700 underline"
-                    >
-                      Artificial Analysis
-                    </a>
-                    , and{" "}
-                    <a
-                      href="https://docs.anthropic.com/en/docs/about-claude/models"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-teal-700 underline"
-                    >
-                      Anthropic model IDs
-                    </a>
-                    .
-                  </p>
+                <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50">
+                  <button
+                    type="button"
+                    onClick={() => setClaudeModelsExpanded((v) => !v)}
+                    className="flex w-full items-center justify-between px-3 py-2 text-left text-xs font-semibold text-slate-900"
+                  >
+                    <span>Advanced: Claude model comparison</span>
+                    <span aria-hidden>{claudeModelsExpanded ? "▼" : "▶"}</span>
+                  </button>
+                  {claudeModelsExpanded && (
+                    <>
+                      <div className="overflow-x-auto border-t border-slate-200">
+                        <table className="w-full min-w-[520px] text-left text-xs text-slate-800">
+                          <thead>
+                            <tr className="border-b border-slate-200 bg-white/80 text-slate-600">
+                              <th className="px-3 py-2 font-semibold">Model</th>
+                              <th className="px-3 py-2 font-semibold">Best for</th>
+                              <th className="px-3 py-2 font-semibold">Speed</th>
+                              <th className="px-3 py-2 font-semibold">Quality</th>
+                              <th className="px-3 py-2 font-semibold">Relative cost</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-200 bg-white/60">
+                            {CLAUDE_MODEL_CHOICES.map((row) => (
+                              <tr
+                                key={row.value}
+                                role="button"
+                                tabIndex={0}
+                                onClick={() => setClaudeModel(row.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter" || e.key === " ") {
+                                    e.preventDefault();
+                                    setClaudeModel(row.value);
+                                  }
+                                }}
+                                className={
+                                  claudeModel === row.value
+                                    ? "cursor-pointer bg-teal-50/90 ring-1 ring-inset ring-teal-200/80"
+                                    : "cursor-pointer hover:bg-slate-50/50"
+                                }
+                              >
+                                <td className="px-3 py-2 font-mono text-[11px] text-slate-900">
+                                  {row.label.split(" — ")[0]}
+                                </td>
+                                <td className="px-3 py-2">{row.bestFor}</td>
+                                <td className="px-3 py-2 whitespace-nowrap">{row.speed}</td>
+                                <td className="px-3 py-2 whitespace-nowrap">{row.quality}</td>
+                                <td className="px-3 py-2 whitespace-nowrap">{row.cost}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      <ul className="space-y-1 border-t border-slate-200 px-3 py-2 text-xs text-slate-700">
+                        <li>
+                          <span className="font-semibold text-slate-800">Start here:</span>{" "}
+                          <strong>Claude Sonnet 4</strong> for sermon summaries in most cases.
+                        </li>
+                        <li>
+                          <span className="font-semibold text-slate-800">Tight budget:</span>{" "}
+                          <strong>Haiku</strong> - fast and lowest cost.
+                        </li>
+                        <li>
+                          <span className="font-semibold text-slate-800">Max quality:</span>{" "}
+                          <strong>Opus 4</strong> - higher cost.
+                        </li>
+                      </ul>
+                      <p className="border-t border-slate-200 px-3 py-2 text-[11px] text-slate-600">
+                        See also{" "}
+                        <a
+                          href="https://chat.lmsys.org/"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-teal-700 underline"
+                        >
+                          LMSYS Arena
+                        </a>
+                        ,{" "}
+                        <a
+                          href="https://artificialanalysis.ai/"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-teal-700 underline"
+                        >
+                          Artificial Analysis
+                        </a>
+                        , and{" "}
+                        <a
+                          href="https://docs.anthropic.com/en/docs/about-claude/models"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-teal-700 underline"
+                        >
+                          Anthropic model IDs
+                        </a>
+                        .
+                      </p>
+                    </>
+                  )}
                 </div>
               </div>
 
@@ -2413,7 +2429,7 @@ export default function SettingsPage() {
                   onClick={handleSaveAiSettings}
                   className="rounded-lg bg-teal-600 px-6 py-2.5 font-semibold text-white shadow-sm hover:bg-teal-700"
                 >
-                  Save API &amp; summary settings
+                  Save API Section Only
                 </button>
                 <button
                   type="button"
@@ -2676,7 +2692,7 @@ export default function SettingsPage() {
                 onClick={handleSaveChurchName}
                 className="px-6 py-2 bg-teal-600 text-white rounded-lg hover:bg-teal-700"
               >
-                Save Church Name
+                Save Church Name Only
               </button>
             </div>
           </div>
@@ -2687,8 +2703,8 @@ export default function SettingsPage() {
               <div>
                 <h3 className="text-xl font-semibold mb-2">Save All Settings</h3>
                 <p className="text-sm text-slate-600">
-                  Saves church name together with all API keys, summary provider choice, models, transcription, and
-                  custom instructions.
+                  Recommended final step. Saves church name, API keys, summary provider choice, models, transcription,
+                  and custom instructions together.
                 </p>
               </div>
               <button
