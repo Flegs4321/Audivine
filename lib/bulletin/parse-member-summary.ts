@@ -180,6 +180,8 @@ export function parseMemberSummaryText(fullSummary: string): {
   messageSpeakerFromSummary: string | null;
 } {
   const lines = fullSummary.split(/\n/);
+  const sermonLeadInRe =
+    /^(?:[➤•^\-*\u2022]\s*)?[A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+){0,4}\s*[-–—]\s*(?:sermon|message)\b/i;
 
   const parsedSections: ParsedBulletinSections = {
     Announcements: [],
@@ -240,6 +242,24 @@ export function parseMemberSummaryText(fullSummary: string): {
       currentSection = "Sharing";
       currentItems = [];
     } else if (currentSection) {
+      // Some outputs end sharing with inline "MESSAGE:" on the same line.
+      if (currentSection === "Sharing" && /\bmessage\s*:/i.test(trimmed)) {
+        const idx = trimmed.search(/\bmessage\s*:/i);
+        const before = trimmed.slice(0, idx).trim().replace(/[–—\-:.\s]+$/u, "").trim();
+        if (before.length > 0) currentItems.push(before);
+        parsedSections.Sharing.push(...currentItems);
+        currentSection = "Sermon";
+        currentItems = [];
+        continue;
+      }
+
+      // If model starts sermon bullets before a formal "MESSAGE:" heading, move to Sermon.
+      if (currentSection === "Sharing" && sermonLeadInRe.test(trimmed)) {
+        parsedSections.Sharing.push(...currentItems);
+        currentSection = "Sermon";
+        currentItems = [];
+      }
+
       const bulletMatch = trimmed.match(/^[➤•^\-*\u2022]\s*(.+)$/);
       const numberedMatch = trimmed.match(/^\d+[.)]\s*(.+)$/);
 

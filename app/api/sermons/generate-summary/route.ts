@@ -11,6 +11,35 @@ import { getUserOpenAISettings } from "@/lib/openai/user-settings";
 
 export const runtime = "nodejs";
 
+function deriveTaggedSermonSpeakerFromRecording(recording: any): string | null {
+  const chunks = Array.isArray(recording?.transcript_chunks) ? recording.transcript_chunks : [];
+  if (chunks.length === 0) return null;
+
+  const sermonSeg = Array.isArray(recording?.segments)
+    ? recording.segments.find((s: any) => s?.label === "Sermon")
+    : null;
+
+  const inSermonRange = chunks.filter((c: any) => {
+    const ts = Number(c?.timestampMs ?? 0);
+    if (!sermonSeg) return true;
+    return ts >= Number(sermonSeg.startMs ?? 0) && (sermonSeg.endMs == null || ts <= Number(sermonSeg.endMs));
+  });
+
+  for (const c of inSermonRange) {
+    const text = String(c?.text || "");
+    const lower = text.toLowerCase();
+    const tagged =
+      c?.speakerTag === true &&
+      (lower.includes("sermon speaker:") || lower.includes("message speaker:"));
+    if (!tagged) continue;
+    if (c?.speaker && String(c.speaker).trim().length > 0) return String(c.speaker).trim();
+    const m = text.match(/^(.+?)\s*-\s*(?:sermon|message)\s+speaker\s*:/i);
+    if (m?.[1]?.trim()) return m[1].trim();
+  }
+
+  return null;
+}
+
 export async function POST(request: NextRequest) {
   try {
     const authHeader = request.headers.get("authorization");
@@ -83,6 +112,10 @@ export async function POST(request: NextRequest) {
 
     const body = await request.json();
     const { recordingId, transcript, sermonSpeakerName } = body;
+    let resolvedSermonSpeakerName: string | null =
+      typeof sermonSpeakerName === "string" && sermonSpeakerName.trim().length > 0
+        ? sermonSpeakerName.trim()
+        : null;
 
     if (!recordingId && !transcript) {
       return NextResponse.json(
@@ -128,6 +161,11 @@ export async function POST(request: NextRequest) {
         }
         
         fullTranscript = transcriptWithSpeakers.trim();
+
+        // If client did not provide sermon speaker, derive from explicit tagged transcript rows.
+        if (!resolvedSermonSpeakerName) {
+          resolvedSermonSpeakerName = deriveTaggedSermonSpeakerFromRecording(recording);
+        }
       } else if (recording.segments && Array.isArray(recording.segments)) {
         // Fallback to segments if transcript_chunks not available
         fullTranscript = recording.segments
@@ -150,8 +188,8 @@ export async function POST(request: NextRequest) {
 
     // Optional instruction to include sermon speaker in MESSAGE header
     const sermonSpeakerInstruction =
-      sermonSpeakerName && typeof sermonSpeakerName === "string" && sermonSpeakerName.trim().length > 0
-        ? `\nImportant: The person who delivered the sermon/message is "${sermonSpeakerName.trim()}". In your summary, use the section header "MESSAGE: ${sermonSpeakerName.trim()}" (e.g. "3) MESSAGE: ${sermonSpeakerName.trim()}") for the sermon section.\n`
+      resolvedSermonSpeakerName && resolvedSermonSpeakerName.length > 0
+        ? `\nImportant: The person who delivered the sermon/message is "${resolvedSermonSpeakerName}". In your summary, use the section header "MESSAGE: ${resolvedSermonSpeakerName}" (e.g. "3) MESSAGE: ${resolvedSermonSpeakerName}") for the sermon section.\n`
         : "";
 
     const customPrompt = genSettings.prompt?.trim() ?? "";

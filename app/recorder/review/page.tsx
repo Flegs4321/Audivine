@@ -743,19 +743,47 @@ function ReviewPageContent() {
       // Combine all sections' transcripts
       const fullTranscript = sections.map((s) => s.text).join("\n\n");
 
-      // Get sermon speaker for MESSAGE header (most common speaker in Sermon section)
+      // Get sermon speaker for MESSAGE header.
+      // Prefer explicit tagged lines like "Name - sermon speaker:" inside the sermon range,
+      // then fall back to the most frequent speaker in that range.
       let sermonSpeakerName: string | null = null;
       const sermonSection = sections.find((s) => s.label === "Sermon");
       if (sermonSection && transcriptChunks.length > 0) {
         const sermonChunks = transcriptChunks.filter(
           (chunk) => chunk.timestampMs >= sermonSection.startMs &&
-            (sermonSection.endMs == null || chunk.timestampMs <= sermonSection.endMs) &&
-            chunk.speaker && chunk.speaker.trim() !== ""
+            (sermonSection.endMs == null || chunk.timestampMs <= sermonSection.endMs)
         );
         if (sermonChunks.length > 0) {
+          const tagged = sermonChunks.find((chunk: any) => {
+            const text = String(chunk.text || "");
+            const lower = text.toLowerCase();
+            return (
+              chunk.speakerTag === true &&
+              (lower.includes("sermon speaker:") || lower.includes("message speaker:"))
+            );
+          }) as any;
+          if (tagged) {
+            if (tagged.speaker && String(tagged.speaker).trim().length > 0) {
+              sermonSpeakerName = String(tagged.speaker).trim();
+            } else {
+              const m = String(tagged.text || "").match(
+                /^(.+?)\s*-\s*(?:sermon|message)\s+speaker\s*:/i
+              );
+              if (m?.[1]?.trim()) sermonSpeakerName = m[1].trim();
+            }
+          }
+        }
+        if (!sermonSpeakerName && sermonChunks.length > 0) {
+          const withSpeaker = sermonChunks.filter(
+            (chunk) => chunk.speaker && chunk.speaker.trim() !== ""
+          );
+          if (withSpeaker.length > 0) {
           const counts: Record<string, number> = {};
-          sermonChunks.forEach((c) => { if (c.speaker) counts[c.speaker] = (counts[c.speaker] || 0) + 1; });
+            withSpeaker.forEach((c) => {
+              if (c.speaker) counts[c.speaker] = (counts[c.speaker] || 0) + 1;
+            });
           sermonSpeakerName = Object.keys(counts).reduce((a, b) => counts[a] > counts[b] ? a : b);
+          }
         }
       }
 
