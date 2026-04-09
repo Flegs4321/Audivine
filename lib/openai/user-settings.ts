@@ -7,7 +7,10 @@ import { createClient } from "@supabase/supabase-js";
 
 export interface UserOpenAISettings {
   apiKey: string;
+  /** OpenAI model used for member summaries. */
   model: string;
+  /** OpenAI model used for transcription endpoints. */
+  transcriptionModel: string;
   prompt?: string | null;
 }
 
@@ -47,7 +50,8 @@ export async function getUserOpenAISettings(
     if (userSettings?.openai_api_key && String(userSettings.openai_api_key).trim().length > 0) {
       return {
         apiKey: String(userSettings.openai_api_key).trim(),
-        model: userSettings.openai_model || "gpt-4o-mini",
+        model: userSettings.member_summary_openai_model || userSettings.openai_model || "gpt-4o-mini",
+        transcriptionModel: userSettings.transcription_openai_model || "whisper-1",
         prompt: userSettings.openai_prompt || null,
       };
     }

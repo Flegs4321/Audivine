@@ -34,6 +34,7 @@ const RETRY_DELAYS = [1000, 2000, 4000]; // Exponential backoff in ms
 async function transcribeWithRetry(
   audioBuffer: Buffer,
   apiKey: string,
+  model: string,
   retryCount = 0
 ): Promise<string> {
   try {
@@ -42,7 +43,7 @@ async function transcribeWithRetry(
     const uint8Array = new Uint8Array(audioBuffer);
     const blob = new Blob([uint8Array], { type: 'audio/webm' });
     formData.append('file', blob, 'recording.webm');
-    formData.append('model', 'whisper-1');
+    formData.append('model', model || "whisper-1");
     formData.append('response_format', 'verbose_json'); // Get timestamps
 
     const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
@@ -61,7 +62,7 @@ async function transcribeWithRetry(
         const delay = RETRY_DELAYS[retryCount] || 8000;
         console.log(`[TRANSCRIBE] Retry ${retryCount + 1}/${MAX_RETRIES} after ${delay}ms`);
         await new Promise(resolve => setTimeout(resolve, delay));
-        return transcribeWithRetry(audioBuffer, apiKey, retryCount + 1);
+        return transcribeWithRetry(audioBuffer, apiKey, model, retryCount + 1);
       }
       
       throw new Error(`OpenAI API error: ${response.status} ${errorText}`);
@@ -73,7 +74,7 @@ async function transcribeWithRetry(
     if (retryCount < MAX_RETRIES && error instanceof Error && error.message.includes('429')) {
       const delay = RETRY_DELAYS[retryCount] || 8000;
       await new Promise(resolve => setTimeout(resolve, delay));
-      return transcribeWithRetry(audioBuffer, apiKey, retryCount + 1);
+      return transcribeWithRetry(audioBuffer, apiKey, model, retryCount + 1);
     }
     throw error;
   }
@@ -136,6 +137,7 @@ export async function POST(request: NextRequest) {
     }
 
     const openaiApiKey = userSettings.apiKey;
+    const transcriptionModel = userSettings.transcriptionModel || "whisper-1";
 
     const body: TranscribeRequest = await request.json();
     const { recordingId, audioUrl } = body;
@@ -226,7 +228,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Transcribe with retry logic
-    const transcriptionResult = await transcribeWithRetry(audioBuffer, openaiApiKey);
+    const transcriptionResult = await transcribeWithRetry(audioBuffer, openaiApiKey, transcriptionModel);
     const transcriptionData = JSON.parse(transcriptionResult);
 
     // Format transcript chunks with timestamps

@@ -180,6 +180,8 @@ export async function PUT(request: NextRequest) {
       church_name,
       openai_api_key,
       openai_model,
+      member_summary_openai_model,
+      transcription_openai_model,
       transcription_method,
       openai_prompt,
       anthropic_api_key,
@@ -208,6 +210,12 @@ export async function PUT(request: NextRequest) {
         : null;
     }
     if (openai_model !== undefined) updateData.openai_model = openai_model;
+    if (member_summary_openai_model !== undefined) {
+      updateData.member_summary_openai_model = member_summary_openai_model;
+    }
+    if (transcription_openai_model !== undefined) {
+      updateData.transcription_openai_model = transcription_openai_model;
+    }
     if (transcription_method !== undefined) updateData.transcription_method = transcription_method;
     if (member_summary_provider !== undefined) {
       const v = String(member_summary_provider).trim().toLowerCase();
@@ -276,8 +284,15 @@ export async function PUT(request: NextRequest) {
             migrationMessage = "PostgREST schema cache needs to refresh. The openai_prompt column exists in the database, but PostgREST hasn't detected it yet. Please wait 10-30 seconds and try again. If the error persists, you may need to restart your Supabase project.";
           } else if (errorText.includes("transcription_method")) {
             migrationMessage = "The transcription_method column does not exist. Please apply the migration: supabase/migrations/012_add_transcription_method.sql";
-          } else if (errorText.includes("openai_api_key") || errorText.includes("openai_model")) {
-            migrationMessage = "The OpenAI settings columns do not exist. Please apply the migration: supabase/migrations/011_add_openai_settings.sql";
+          } else if (
+            errorText.includes("openai_api_key") ||
+            errorText.includes("openai_model") ||
+            errorText.includes("member_summary_openai_model") ||
+            errorText.includes("transcription_openai_model")
+          ) {
+            migrationMessage =
+              "Some OpenAI settings columns are missing. Apply supabase/migrations/011_add_openai_settings.sql " +
+              "and supabase/migrations/020_add_per_task_model_settings.sql, then wait for schema cache refresh.";
           } else if (
             errorText.includes("anthropic_api_key") ||
             errorText.includes("claude_model")
@@ -339,8 +354,15 @@ export async function PUT(request: NextRequest) {
             migrationMessage = "PostgREST schema cache needs to refresh. The openai_prompt column exists in the database, but PostgREST hasn't detected it yet. Please wait 10-30 seconds and try again. If the error persists, you may need to restart your Supabase project.";
           } else if (errorText.includes("transcription_method")) {
             migrationMessage = "The transcription_method column does not exist. Please apply the migration: supabase/migrations/012_add_transcription_method.sql";
-          } else if (errorText.includes("openai_api_key") || errorText.includes("openai_model")) {
-            migrationMessage = "The OpenAI settings columns do not exist. Please apply the migration: supabase/migrations/011_add_openai_settings.sql";
+          } else if (
+            errorText.includes("openai_api_key") ||
+            errorText.includes("openai_model") ||
+            errorText.includes("member_summary_openai_model") ||
+            errorText.includes("transcription_openai_model")
+          ) {
+            migrationMessage =
+              "Some OpenAI settings columns are missing. Apply supabase/migrations/011_add_openai_settings.sql " +
+              "and supabase/migrations/020_add_per_task_model_settings.sql, then wait for schema cache refresh.";
           } else if (
             errorText.includes("anthropic_api_key") ||
             errorText.includes("claude_model")

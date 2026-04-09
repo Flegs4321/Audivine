@@ -96,7 +96,7 @@ export async function POST(request: NextRequest) {
     const mime = file.type || "audio/webm";
     const openaiForm = new FormData();
     openaiForm.append("file", new Blob([new Uint8Array(buffer)], { type: mime }), "slice.webm");
-    openaiForm.append("model", "whisper-1");
+    openaiForm.append("model", userSettings.transcriptionModel || "whisper-1");
     openaiForm.append("response_format", "json");
 
     const openaiRes = await fetch("https://api.openai.com/v1/audio/transcriptions", {

@@ -121,7 +121,7 @@ export async function getUserSummaryGenerationSettings(
           hasOpenaiKey
             ? {
                 apiKey: String(openaiKey).trim(),
-                model: row.openai_model || "gpt-4o-mini",
+                model: row.member_summary_openai_model || row.openai_model || "gpt-4o-mini",
               }
             : undefined,
       };
@@ -133,7 +133,7 @@ export async function getUserSummaryGenerationSettings(
         prompt: sharedPrompt,
         openai: {
           apiKey: String(openaiKey).trim(),
-          model: row.openai_model || "gpt-4o-mini",
+          model: row.member_summary_openai_model || row.openai_model || "gpt-4o-mini",
         },
       };
     }

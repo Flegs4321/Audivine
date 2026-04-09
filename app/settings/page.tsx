@@ -17,6 +17,8 @@ interface UserSettings {
   church_name?: string | null;
   openai_api_key?: string | null;
   openai_model?: string | null;
+  member_summary_openai_model?: string | null;
+  transcription_openai_model?: string | null;
   transcription_method?: string | null;
   openai_prompt?: string | null;
   anthropic_api_key?: string | null;
@@ -44,6 +46,24 @@ function isAnthropicColumnMigrationError(message: string): boolean {
     (m.includes("could not find") &&
       (m.includes("anthropic_api_key") || m.includes("claude_model"))) ||
     (m.includes("pgrst204") && (m.includes("anthropic") || m.includes("claude")))
+  );
+}
+
+function isMemberSummaryProviderMigrationError(message: string): boolean {
+  const m = message.toLowerCase();
+  return (
+    m.includes("member_summary_provider column is missing") ||
+    (m.includes("could not find") && m.includes("member_summary_provider")) ||
+    (m.includes("column") && m.includes("member_summary_provider") && m.includes("does not exist")) ||
+    (m.includes("pgrst204") && m.includes("member_summary_provider"))
+  );
+}
+
+function isPerTaskOpenaiModelMigrationError(message: string): boolean {
+  const m = message.toLowerCase();
+  return (
+    m.includes("member_summary_openai_model") ||
+    m.includes("transcription_openai_model")
   );
 }
 
@@ -291,6 +311,12 @@ const OPENAI_MODEL_CHART_ROWS: {
   },
 ];
 
+const OPENAI_TRANSCRIPTION_MODEL_CHOICES = [
+  { value: "whisper-1", label: "Whisper-1 (stable default)" },
+  { value: "gpt-4o-mini-transcribe", label: "GPT-4o mini transcribe (faster/newer)" },
+  { value: "gpt-4o-transcribe", label: "GPT-4o transcribe (highest quality)" },
+];
+
 export default function SettingsPage() {
   const router = useRouter();
   const { user, signOut, loading: authLoading } = useAuth();
@@ -301,7 +327,8 @@ export default function SettingsPage() {
   const [logoFile, setLogoFile] = useState<File | null>(null);
   const [churchName, setChurchName] = useState("");
   const [openaiApiKey, setOpenaiApiKey] = useState("");
-  const [openaiModel, setOpenaiModel] = useState("gpt-4o-mini");
+  const [memberSummaryOpenaiModel, setMemberSummaryOpenaiModel] = useState("gpt-4o-mini");
+  const [transcriptionOpenaiModel, setTranscriptionOpenaiModel] = useState("whisper-1");
   const [transcriptionMethod, setTranscriptionMethod] = useState<"browser" | "openai">("browser");
   const [openaiPrompt, setOpenaiPrompt] = useState("");
   const [anthropicApiKey, setAnthropicApiKey] = useState("");
@@ -340,17 +367,17 @@ export default function SettingsPage() {
   /** Ensures the dropdown always includes the current saved model (API IDs may differ from our presets). */
   const openaiDropdownModelIds = useMemo(() => {
     if (availableModels.length > 0) {
-      if (openaiModel && !availableModels.includes(openaiModel)) {
-        return [openaiModel, ...availableModels];
+      if (memberSummaryOpenaiModel && !availableModels.includes(memberSummaryOpenaiModel)) {
+        return [memberSummaryOpenaiModel, ...availableModels];
       }
       return availableModels;
     }
     const base = OPENAI_MODEL_CHART_ROWS.map((r) => r.value);
-    if (openaiModel && !base.includes(openaiModel)) {
-      return [openaiModel, ...base];
+    if (memberSummaryOpenaiModel && !base.includes(memberSummaryOpenaiModel)) {
+      return [memberSummaryOpenaiModel, ...base];
     }
     return base;
-  }, [availableModels, openaiModel]);
+  }, [availableModels, memberSummaryOpenaiModel]);
 
   const [speakers, setSpeakers] = useState<Speaker[]>([]);
   const [loadingSpeakers, setLoadingSpeakers] = useState(false);
@@ -443,7 +470,10 @@ export default function SettingsPage() {
         } else {
           setOpenaiApiKey("");
         }
-        setOpenaiModel(data.settings?.openai_model || "gpt-4o-mini");
+        setMemberSummaryOpenaiModel(
+          data.settings?.member_summary_openai_model || data.settings?.openai_model || "gpt-4o-mini"
+        );
+        setTranscriptionOpenaiModel(data.settings?.transcription_openai_model || "whisper-1");
         setTranscriptionMethod((data.settings?.transcription_method as "browser" | "openai") || "browser");
         setOpenaiPrompt(data.settings?.openai_prompt || "");
         if (data.settings?.anthropic_api_key && data.settings.anthropic_api_key.includes("...")) {
@@ -1148,13 +1178,13 @@ export default function SettingsPage() {
       ).sort();
 
       // Check if current model is available
-      const isModelAvailable = chatModels.includes(openaiModel);
+      const isModelAvailable = chatModels.includes(memberSummaryOpenaiModel);
 
       setOpenAITestResult({
         connected: true,
         message: isModelAvailable 
           ? "OpenAI API is connected and working!" 
-          : `OpenAI API is connected, but the selected model "${openaiModel}" may not be available.`,
+          : `OpenAI API is connected, but the selected model "${memberSummaryOpenaiModel}" may not be available.`,
         apiKeyPrefix: keyToTest.substring(0, 7) + "...",
         isModelAvailable: isModelAvailable,
         availableModels: chatModels,
@@ -1171,7 +1201,7 @@ export default function SettingsPage() {
             || chatModels[0];
           
           if (fallback) {
-            setOpenaiModel(fallback);
+            setMemberSummaryOpenaiModel(fallback);
             setError(`Selected model was not available. Switched to "${fallback}".`);
           }
         }
@@ -1227,7 +1257,9 @@ export default function SettingsPage() {
         ...(apiKeyToSave ? { openai_api_key: apiKeyToSave } : {}),
         ...(anthropicKeyToSave ? { anthropic_api_key: anthropicKeyToSave } : {}),
         claude_model: claudeModel || "claude-sonnet-4-20250514",
-        openai_model: openaiModel || "gpt-4o-mini",
+        openai_model: memberSummaryOpenaiModel || "gpt-4o-mini",
+        member_summary_openai_model: memberSummaryOpenaiModel || "gpt-4o-mini",
+        transcription_openai_model: transcriptionOpenaiModel || "whisper-1",
         transcription_method: transcriptionMethod,
         openai_prompt: openaiPrompt || null,
         member_summary_provider: memberSummaryProvider,
@@ -1236,6 +1268,11 @@ export default function SettingsPage() {
       const hadAnthropicInPayload = !!(
         saveBody.anthropic_api_key || saveBody.claude_model
       );
+      const hadMemberSummaryProviderInPayload =
+        saveBody.member_summary_provider !== undefined;
+      const hadPerTaskOpenaiModelFields =
+        saveBody.member_summary_openai_model !== undefined ||
+        saveBody.transcription_openai_model !== undefined;
 
       let response = await fetch("/api/settings", {
         method: "PUT",
@@ -1273,6 +1310,58 @@ export default function SettingsPage() {
             );
             alert(
               "OpenAI settings saved. Run the SQL on this page, then save again to store your Claude API key."
+            );
+            return;
+          }
+        }
+
+        if (
+          isMemberSummaryProviderMigrationError(errorMessage) &&
+          hadMemberSummaryProviderInPayload
+        ) {
+          const retryBody = { ...saveBody };
+          delete retryBody.member_summary_provider;
+          response = await fetch("/api/settings", {
+            method: "PUT",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${session.access_token}`,
+            },
+            body: JSON.stringify(retryBody),
+          });
+          if (response.ok) {
+            await loadSettings();
+            setError(
+              "API settings saved, but member-summary provider preference could not be stored yet. " +
+                "Run supabase/migrations/019_add_member_summary_provider.sql, wait for schema refresh, then save again."
+            );
+            alert(
+              "API settings saved. Run migration 019 in Supabase SQL Editor, wait a few seconds, then save again to store your member-summary provider preference."
+            );
+            return;
+          }
+        }
+
+        if (isPerTaskOpenaiModelMigrationError(errorMessage) && hadPerTaskOpenaiModelFields) {
+          const retryBody = { ...saveBody };
+          delete retryBody.member_summary_openai_model;
+          delete retryBody.transcription_openai_model;
+          response = await fetch("/api/settings", {
+            method: "PUT",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${session.access_token}`,
+            },
+            body: JSON.stringify(retryBody),
+          });
+          if (response.ok) {
+            await loadSettings();
+            setError(
+              "Settings saved, but per-task OpenAI model preferences could not be stored yet. " +
+                "Run supabase/migrations/020_add_per_task_model_settings.sql, wait for schema refresh, then save again."
+            );
+            alert(
+              "Settings saved. Run migration 020 in Supabase SQL Editor, wait a few seconds, then save again to store per-task model preferences."
             );
             return;
           }
@@ -1330,7 +1419,9 @@ export default function SettingsPage() {
 
       const settingsToSave: Record<string, unknown> = {
         church_name: churchName || null,
-        openai_model: openaiModel || "gpt-4o-mini",
+        openai_model: memberSummaryOpenaiModel || "gpt-4o-mini",
+        member_summary_openai_model: memberSummaryOpenaiModel || "gpt-4o-mini",
+        transcription_openai_model: transcriptionOpenaiModel || "whisper-1",
         transcription_method: transcriptionMethod,
         openai_prompt: openaiPrompt || null,
         claude_model: claudeModel || "claude-sonnet-4-20250514",
@@ -1348,6 +1439,11 @@ export default function SettingsPage() {
       const hadAnthropicInPayload = !!(
         settingsToSave.anthropic_api_key || settingsToSave.claude_model
       );
+      const hadMemberSummaryProviderInPayload =
+        settingsToSave.member_summary_provider !== undefined;
+      const hadPerTaskOpenaiModelFields =
+        settingsToSave.member_summary_openai_model !== undefined ||
+        settingsToSave.transcription_openai_model !== undefined;
 
       let response = await fetch("/api/settings", {
         method: "PUT",
@@ -1385,6 +1481,58 @@ export default function SettingsPage() {
             );
             alert(
               "Other settings saved. Run the SQL shown in the red message on this page, wait a few seconds, then click Save again to store your Claude API key."
+            );
+            return;
+          }
+        }
+
+        if (
+          isMemberSummaryProviderMigrationError(errorMessage) &&
+          hadMemberSummaryProviderInPayload
+        ) {
+          const retryPayload = { ...settingsToSave };
+          delete retryPayload.member_summary_provider;
+          response = await fetch("/api/settings", {
+            method: "PUT",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${session.access_token}`,
+            },
+            body: JSON.stringify(retryPayload),
+          });
+          if (response.ok) {
+            await loadSettings();
+            setError(
+              "Other settings saved, but member-summary provider preference could not be stored yet. " +
+                "Run supabase/migrations/019_add_member_summary_provider.sql, wait for schema refresh, then save again."
+            );
+            alert(
+              "Settings saved. Run migration 019 in Supabase SQL Editor, wait a few seconds, then save again to store your member-summary provider preference."
+            );
+            return;
+          }
+        }
+
+        if (isPerTaskOpenaiModelMigrationError(errorMessage) && hadPerTaskOpenaiModelFields) {
+          const retryPayload = { ...settingsToSave };
+          delete retryPayload.member_summary_openai_model;
+          delete retryPayload.transcription_openai_model;
+          response = await fetch("/api/settings", {
+            method: "PUT",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${session.access_token}`,
+            },
+            body: JSON.stringify(retryPayload),
+          });
+          if (response.ok) {
+            await loadSettings();
+            setError(
+              "Settings saved, but per-task OpenAI model preferences could not be stored yet. " +
+                "Run supabase/migrations/020_add_per_task_model_settings.sql, wait for schema refresh, then save again."
+            );
+            alert(
+              "Settings saved. Run migration 020 in Supabase SQL Editor, wait a few seconds, then save again to store per-task model preferences."
             );
             return;
           }
@@ -1581,7 +1729,7 @@ export default function SettingsPage() {
               >
                 OpenAI
                 <span className="mt-1 block text-xs font-normal text-slate-600">
-                  Uses the ChatGPT model below (requires OpenAI key).
+                  Uses the member-summary OpenAI model below (requires OpenAI key).
                 </span>
               </button>
               <button
@@ -1681,11 +1829,11 @@ export default function SettingsPage() {
 
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-2">
-                  ChatGPT model
+                  Member summary (OpenAI) model
                 </label>
                 <select
-                  value={openaiModel}
-                  onChange={(e) => setOpenaiModel(e.target.value)}
+                  value={memberSummaryOpenaiModel}
+                  onChange={(e) => setMemberSummaryOpenaiModel(e.target.value)}
                   className="w-full px-3 py-2 border border-slate-300 rounded focus:ring-2 focus:ring-teal-500/40"
                 >
                   {openaiDropdownModelIds.map((model) => {
@@ -1729,7 +1877,7 @@ export default function SettingsPage() {
 
                 <div className="mt-3 overflow-hidden rounded-lg border border-slate-200 bg-slate-50">
                   <p className="border-b border-slate-200 bg-slate-100/90 px-3 py-2 text-xs font-semibold text-slate-900">
-                    ChatGPT model comparison (like choosing in ChatGPT)
+                    Member summary model comparison (OpenAI)
                     <span className="ml-1 font-normal text-slate-600">
                       — click a row to select that model
                     </span>
@@ -1756,17 +1904,17 @@ export default function SettingsPage() {
                               role="button"
                               tabIndex={canSelect ? 0 : -1}
                               onClick={() => {
-                                if (canSelect) setOpenaiModel(row.value);
+                                if (canSelect) setMemberSummaryOpenaiModel(row.value);
                               }}
                               onKeyDown={(e) => {
                                 if (!canSelect) return;
                                 if (e.key === "Enter" || e.key === " ") {
                                   e.preventDefault();
-                                  setOpenaiModel(row.value);
+                                  setMemberSummaryOpenaiModel(row.value);
                                 }
                               }}
                               className={
-                                openaiModel === row.value
+                                memberSummaryOpenaiModel === row.value
                                   ? canSelect
                                     ? "cursor-pointer bg-teal-50/90 ring-1 ring-inset ring-teal-200/80"
                                     : "bg-teal-50/90 ring-1 ring-inset ring-teal-200/80 opacity-90"
@@ -1893,8 +2041,29 @@ export default function SettingsPage() {
                       <p className="mt-1 text-xs text-slate-500">
                         {transcriptionMethod === "browser" 
                           ? "Uses your browser's built-in speech recognition. Free but may be less accurate."
-                          : "Uses OpenAI Whisper API for transcription. More accurate but requires your OpenAI API key and incurs costs."}
+                          : "Uses your selected OpenAI transcription model. More accurate but requires your OpenAI API key and incurs costs."}
                       </p>
+                      {transcriptionMethod === "openai" && (
+                        <div className="mt-3">
+                          <label className="block text-sm font-medium text-slate-700 mb-2">
+                            Transcription (OpenAI) model
+                          </label>
+                          <select
+                            value={transcriptionOpenaiModel}
+                            onChange={(e) => setTranscriptionOpenaiModel(e.target.value)}
+                            className="w-full px-3 py-2 border border-slate-300 rounded focus:ring-2 focus:ring-teal-500/40"
+                          >
+                            {OPENAI_TRANSCRIPTION_MODEL_CHOICES.map((m) => (
+                              <option key={m.value} value={m.value}>
+                                {m.label}
+                              </option>
+                            ))}
+                          </select>
+                          <p className="mt-1 text-xs text-slate-500">
+                            Applies to live captions and post-upload transcription.
+                          </p>
+                        </div>
+                      )}
                       {transcriptionMethod === "openai" && !hasApiKey && (
                         <div className="mt-2 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
                           <p className="text-xs text-yellow-800 font-semibold mb-1">
@@ -1912,7 +2081,7 @@ export default function SettingsPage() {
                             ✅ OpenAI API Key Configured
                           </p>
                           <p className="text-xs text-green-700 mt-1">
-                            Your recordings will be transcribed using OpenAI Whisper API after upload.
+                            Your recordings will be transcribed using the selected OpenAI transcription model after upload.
                           </p>
                         </div>
                       )}
