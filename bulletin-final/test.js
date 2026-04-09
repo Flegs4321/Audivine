@@ -8,8 +8,9 @@
 const fs = require("fs");
 const path = require("path");
 const { execSync } = require("child_process");
+const { resolveBulletinTemplateDocx } = require("./resolve-template-path");
 
-const TEMPLATE_PATH = path.join(__dirname, "template", "template.docx");
+const TEMPLATE_PATH = resolveBulletinTemplateDocx(path.join(__dirname, "template"));
 const OUTPUT_DIR = path.join(__dirname, "output");
 const TEMP_DIR = path.join(__dirname, ".temp");
 

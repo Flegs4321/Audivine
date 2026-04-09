@@ -1,18 +1,25 @@
 import fs from "fs";
-import path from "path";
 import PizZip from "pizzip";
 import type { SonlightBulletinJson } from "./types";
-
-function templatePath(): string {
-  return path.join(process.cwd(), "bulletin-final", "template", "template.docx");
-}
+import { bulletinTemplateDir, resolveBulletinTemplateDocxPath } from "./bulletin-final-paths";
+import { findSplitMarkerIndex, replaceSplitPlaceholder } from "./docx-xml-placeholders";
+import {
+  cleanMarkdownArtifactsForPrayer,
+  normalizeSharingTypography,
+  SHARING_LINE_ARROWHEAD,
+} from "./prayer-sharing-text";
 
 function esc(str: string | undefined): string {
   return (str || "N/A").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
 }
 
-function cloneSection(xml: string, marker: string, items: string[] | undefined): string {
-  const idx = xml.indexOf(marker);
+function cloneSection(
+  xml: string,
+  marker: string,
+  items: string[] | undefined,
+  formatItem?: (item: string, index: number) => string
+): string {
+  const idx = findSplitMarkerIndex(xml, marker);
   if (idx === -1) return xml;
 
   let pStart = idx;
@@ -33,17 +40,44 @@ function cloneSection(xml: string, marker: string, items: string[] | undefined):
     return xml.substring(0, pStart) + xml.substring(pEnd);
   }
 
-  const clones = items.map((item) => templateBlock.replace(marker, esc(item))).join("\n    ");
+  const clones = items
+    .map((item, i) =>
+      replaceSplitPlaceholder(
+        templateBlock,
+        marker,
+        formatItem ? formatItem(item, i) : esc(item)
+      )
+    )
+    .join("\n    ");
   return xml.substring(0, pStart) + clones + xml.substring(pEnd);
 }
 
 /**
- * Fills bulletin-final/template/template.docx using the same XML rules as bulletin-final/generate.js.
+ * One paragraph per speaker: ➤ + whole testimony on one line (no Word list glyph — that doubled the arrowheads).
+ */
+function formatPrayerItemForDocx(item: string, _index: number): string {
+  let t = item
+    .replace(/^>\s*/, "")
+    .replace(/^[➤•]\s*/gu, "")
+    .trim();
+  t = t.replace(/^\^+\s*/, "");
+  t = cleanMarkdownArtifactsForPrayer(t);
+  t = t.replace(/\s*\n\s*/g, " ").replace(/\s+/g, " ").trim();
+  t = normalizeSharingTypography(t);
+  if (!t) return esc("N/A");
+  return esc(`${SHARING_LINE_ARROWHEAD} ${t}`);
+}
+
+/**
+ * Fills the master template under bulletin-final/template/ (see bulletin-final-paths)
+ * using the same XML rules as bulletin-final/generate.js.
  */
 export function buildBulletinDocxBuffer(bulletin: SonlightBulletinJson): Buffer {
-  const tpl = templatePath();
+  const tpl = resolveBulletinTemplateDocxPath();
   if (!fs.existsSync(tpl)) {
-    throw new Error(`Bulletin template not found at ${tpl}`);
+    throw new Error(
+      `Bulletin template not found. Place template.docx (or TEMPLATE.docx) in ${bulletinTemplateDir()}`
+    );
   }
 
   const input = fs.readFileSync(tpl);
@@ -55,22 +89,37 @@ export function buildBulletinDocxBuffer(bulletin: SonlightBulletinJson): Buffer 
 
   let xml = doc.asText();
 
-  xml = xml.replace("{{DATE}}", esc(bulletin.date));
-  xml = xml.replace("{{THIS_EVENING}}", esc(bulletin.announcements?.this_evening));
-  xml = xml.replace("{{WEDNESDAY_EVE}}", esc(bulletin.announcements?.wednesday_eve));
-  xml = xml.replace("{{DEVOTIONS}}", esc(bulletin.announcements?.next_sunday_devotions));
-  xml = xml.replace("{{CHAIR_SETUP}}", esc(bulletin.announcements?.next_sunday_chair_set_up));
-  xml = xml.replace("{{HOST_HOSTESS}}", esc(bulletin.announcements?.next_sunday_host_hostess));
-  xml = xml.replace("{{IN_SERVICE}}", esc(bulletin.prayer_sharing?.in_service));
-  xml = xml.replace("{{SPEAKER}}", esc(bulletin.message?.speaker));
-  xml = xml.replace("{{SERMON_TITLE}}", esc(bulletin.message?.title));
+  if (!xml.includes("{{DATE}}")) {
+    throw new Error(
+      `Bulletin template has no {{DATE}} placeholder. The .docx may be a static example only; ` +
+        `replace body copy with tokens (see bulletin-final/.cursorrules) or run scripts/inject-bulletin-placeholders.mjs on a copy that matches the expected example lines.`
+    );
+  }
+
+  const rep = (token: string, val: string | undefined) => {
+    xml = replaceSplitPlaceholder(xml, token, esc(val));
+  };
+
+  rep("{{DATE}}", bulletin.date);
+  rep("{{THIS_EVENING}}", bulletin.announcements?.this_evening);
+  rep("{{WEDNESDAY_EVE}}", bulletin.announcements?.wednesday_eve);
+  rep("{{DEVOTIONS}}", bulletin.announcements?.next_sunday_devotions);
+  rep("{{CHAIR_SETUP}}", bulletin.announcements?.next_sunday_chair_set_up);
+  rep("{{HOST_HOSTESS}}", bulletin.announcements?.next_sunday_host_hostess);
+  const inServiceRaw = bulletin.prayer_sharing?.in_service || "";
+  const inServiceOut = normalizeSharingTypography(
+    cleanMarkdownArtifactsForPrayer(inServiceRaw).replace(/\s*\n\s*/g, " ").replace(/\s+/g, " ").trim()
+  );
+  rep("{{IN_SERVICE}}", inServiceOut || undefined);
+  rep("{{SPEAKER}}", bulletin.message?.speaker);
+  rep("{{SERMON_TITLE}}", bulletin.message?.title);
 
   xml = cloneSection(xml, "{{ANNOUNCEMENT_ITEM}}", bulletin.announcements?.additional || []);
   xml = cloneSection(xml, "{{EVENT_ITEM}}", bulletin.upcoming_events || []);
   const prayerItems = (bulletin.prayer_sharing?.items || []).map((s) =>
-    s.replace(/^[➤•]\s*/gu, "").trim()
+    s.replace(/^\^+\s*/, "").replace(/^>\s*/, "").replace(/^[➤•]\s*/gu, "").trim()
   );
-  xml = cloneSection(xml, "{{PRAYER_ITEM}}", prayerItems);
+  xml = cloneSection(xml, "{{PRAYER_ITEM}}", prayerItems, formatPrayerItemForDocx);
   xml = cloneSection(xml, "{{MESSAGE_POINT}}", bulletin.message?.points || []);
 
   zip.file("word/document.xml", xml);

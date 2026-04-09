@@ -70,8 +70,9 @@ The `.docx` is written under `bulletin-final/output/`. Open it in Word.
 ```
 bulletin-final/
 ├── generate.js          ← Generator (Node built-ins only)
+├── resolve-template-path.js  ← Finds template.docx or TEMPLATE.docx under template/
 ├── template/
-│   └── template.docx    ← Master template (placeholders {{DATE}}, {{EVENT_ITEM}}, …)
+│   └── template.docx    ← Master template (or TEMPLATE.docx on Windows); placeholders {{DATE}}, {{EVENT_ITEM}}, …
 ├── output/              ← Generated bulletins
 ├── notes-example.txt    ← Sample notes for file mode
 ├── .cursorrules         ← Cursor guidance for this folder

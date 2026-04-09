@@ -42,12 +42,14 @@ function loadEnvFromFile(filePath) {
 loadEnvFromFile(path.join(__dirname, "..", ".env.local"));
 loadEnvFromFile(path.join(__dirname, ".env"));
 
+const { resolveBulletinTemplateDocx } = require("./resolve-template-path");
+
 // ============================================================
 // CONFIGURATION
 // ============================================================
 const API_KEY = process.env.ANTHROPIC_API_KEY || "";
 
-const TEMPLATE_PATH = path.join(__dirname, "template", "template.docx");
+const TEMPLATE_PATH = resolveBulletinTemplateDocx(path.join(__dirname, "template"));
 const OUTPUT_DIR = path.join(__dirname, "output");
 const TEMP_DIR = path.join(__dirname, ".temp");
 
@@ -321,18 +323,89 @@ function buildDocx(bulletin, outputPath) {
     return (str || "N/A").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
   }
 
-  xml = xml.replace("{{DATE}}", esc(bulletin.date));
-  xml = xml.replace("{{THIS_EVENING}}", esc(bulletin.announcements?.this_evening));
-  xml = xml.replace("{{WEDNESDAY_EVE}}", esc(bulletin.announcements?.wednesday_eve));
-  xml = xml.replace("{{DEVOTIONS}}", esc(bulletin.announcements?.next_sunday_devotions));
-  xml = xml.replace("{{CHAIR_SETUP}}", esc(bulletin.announcements?.next_sunday_chair_set_up));
-  xml = xml.replace("{{HOST_HOSTESS}}", esc(bulletin.announcements?.next_sunday_host_hostess));
-  xml = xml.replace("{{IN_SERVICE}}", esc(bulletin.prayer_sharing?.in_service));
-  xml = xml.replace("{{SPEAKER}}", esc(bulletin.message?.speaker));
-  xml = xml.replace("{{SERMON_TITLE}}", esc(bulletin.message?.title));
+  /** Word splits {{TAG}} across <w:t> runs — allow XML between characters. */
+  function escapeRegexChar(c) {
+    return c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+  function splitPlaceholderRegex(placeholder, global) {
+    const chars = [...placeholder].map((c) => escapeRegexChar(c));
+    return new RegExp(chars.join("(?:<[^>]+>)*"), global ? "g" : "");
+  }
+  function findSplitMarkerIndex(xmlStr, marker) {
+    if (xmlStr.includes(marker)) return xmlStr.indexOf(marker);
+    const m = splitPlaceholderRegex(marker, false).exec(xmlStr);
+    return m ? m.index : -1;
+  }
+  function replaceSplitPlaceholder(xmlStr, placeholder, replacementEscaped) {
+    if (xmlStr.includes(placeholder)) {
+      return xmlStr.split(placeholder).join(replacementEscaped);
+    }
+    return xmlStr.replace(splitPlaceholderRegex(placeholder, true), replacementEscaped);
+  }
 
-  function cloneSection(marker, items) {
-    const idx = xml.indexOf(marker);
+  function rep(token, val) {
+    xml = replaceSplitPlaceholder(xml, token, esc(val));
+  }
+
+  const SHARING_LINE_ARROWHEAD = "\u27A4";
+
+  function cleanMarkdownArtifactsForPrayer(text) {
+    let s = (text || "").trim();
+    for (let i = 0; i < 10; i++) {
+      const next = s
+        .replace(/\*\*([^*]+)\*\*/g, "$1")
+        .replace(/\*([^*\n]+)\*/g, "$1")
+        .replace(/([A-Za-z])\*\*(?=\s|$|[,–—.!?:;])/gu, "$1")
+        .replace(/\*\*(?=\s|[,–—.!?:;]|$)/gu, "")
+        .replace(/^\*\*\s*/g, "")
+        .replace(/\s*\*\*$/gm, "")
+        .replace(/\*{2,}/g, "")
+        .trim();
+      if (next === s) break;
+      s = next;
+    }
+    return s;
+  }
+
+  function normalizeSharingTypography(text) {
+    let s = (text || "").trim();
+    if (!s) return s;
+    const EM = "\u2014";
+    s = s.replace(/\s+[\u2013\u2014\-]\s+/g, " " + EM + " ");
+    s = s.replace(/\s+([,;:.!?])/g, "$1");
+    s = s.replace(/\s+/g, " ").trim();
+    return s;
+  }
+
+  function formatPrayerItemForDocx(item, index) {
+    let t = (item || "")
+      .replace(/^>\s*/, "")
+      .replace(/^[➤•]\s*/gu, "")
+      .trim();
+    t = t.replace(/^\^+\s*/, "");
+    t = cleanMarkdownArtifactsForPrayer(t);
+    t = t.replace(/\s*\n\s*/g, " ").replace(/\s+/g, " ").trim();
+    t = normalizeSharingTypography(t);
+    if (!t) return esc("N/A");
+    return esc(`${SHARING_LINE_ARROWHEAD} ${t}`);
+  }
+
+  rep("{{DATE}}", bulletin.date);
+  rep("{{THIS_EVENING}}", bulletin.announcements?.this_evening);
+  rep("{{WEDNESDAY_EVE}}", bulletin.announcements?.wednesday_eve);
+  rep("{{DEVOTIONS}}", bulletin.announcements?.next_sunday_devotions);
+  rep("{{CHAIR_SETUP}}", bulletin.announcements?.next_sunday_chair_set_up);
+  rep("{{HOST_HOSTESS}}", bulletin.announcements?.next_sunday_host_hostess);
+  const inServiceRaw = bulletin.prayer_sharing?.in_service || "";
+  const inServiceOut = normalizeSharingTypography(
+    cleanMarkdownArtifactsForPrayer(inServiceRaw).replace(/\s*\n\s*/g, " ").replace(/\s+/g, " ").trim()
+  );
+  rep("{{IN_SERVICE}}", inServiceOut || undefined);
+  rep("{{SPEAKER}}", bulletin.message?.speaker);
+  rep("{{SERMON_TITLE}}", bulletin.message?.title);
+
+  function cloneSection(marker, items, formatItem) {
+    const idx = findSplitMarkerIndex(xml, marker);
     if (idx === -1) return;
     let pStart = idx;
     while (pStart > 0) {
@@ -351,16 +424,24 @@ function buildDocx(bulletin, outputPath) {
       return;
     }
 
-    const clones = items.map((item) => templateBlock.replace(marker, esc(item))).join("\n    ");
+    const clones = items
+      .map((item, i) =>
+        replaceSplitPlaceholder(
+          templateBlock,
+          marker,
+          formatItem ? formatItem(item, i) : esc(item)
+        )
+      )
+      .join("\n    ");
     xml = xml.substring(0, pStart) + clones + xml.substring(pEnd);
   }
 
   cloneSection("{{ANNOUNCEMENT_ITEM}}", bulletin.announcements?.additional || []);
   cloneSection("{{EVENT_ITEM}}", bulletin.upcoming_events || []);
   const prayerItems = (bulletin.prayer_sharing?.items || []).map((s) =>
-    (s || "").replace(/^[➤•]\s*/gu, "").trim()
+    (s || "").replace(/^\^+\s*/, "").replace(/^>\s*/, "").replace(/^[➤•]\s*/gu, "").trim()
   );
-  cloneSection("{{PRAYER_ITEM}}", prayerItems);
+  cloneSection("{{PRAYER_ITEM}}", prayerItems, formatPrayerItemForDocx);
   cloneSection("{{MESSAGE_POINT}}", bulletin.message?.points || []);
 
   fs.writeFileSync(xmlPath, xml);
