@@ -370,10 +370,17 @@ function buildDocx(bulletin, outputPath) {
   function normalizeSharingTypography(text) {
     let s = (text || "").trim();
     if (!s) return s;
-    const EM = "\u2014";
-    s = s.replace(/\s+[\u2013\u2014\-]\s+/g, " " + EM + " ");
+    const NAME_SEP = " - ";
+    s = s.replace(
+      /^([A-Z][A-Za-z.'-]*(?:\s+(?:&\s+)?[A-Z][A-Za-z.'-]*){0,5})(?:\s*\([^)]{1,40}\))?\s*[-–—]\s+/u,
+      (_m, name) => `${name}${NAME_SEP}`
+    );
+    s = s.replace(/\s+[\u2013\u2014\-]\s+/g, NAME_SEP);
     s = s.replace(/\s+([,;:.!?])/g, "$1");
     s = s.replace(/\s+/g, " ").trim();
+    if (!/[.!?]["')\]]*$/u.test(s)) {
+      s = `${s}.`;
+    }
     return s;
   }
 
