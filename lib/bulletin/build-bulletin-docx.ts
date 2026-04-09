@@ -72,15 +72,22 @@ function formatPrayerItemForDocx(item: string, _index: number): string {
  * Fills the master template under bulletin-final/template/ (see bulletin-final-paths)
  * using the same XML rules as bulletin-final/generate.js.
  */
-export function buildBulletinDocxBuffer(bulletin: SonlightBulletinJson): Buffer {
-  const tpl = resolveBulletinTemplateDocxPath();
-  if (!fs.existsSync(tpl)) {
-    throw new Error(
-      `Bulletin template not found. Place template.docx (or TEMPLATE.docx) in ${bulletinTemplateDir()}`
-    );
+export function buildBulletinDocxBuffer(
+  bulletin: SonlightBulletinJson,
+  templateInput?: Buffer | Uint8Array
+): Buffer {
+  let input: Buffer | Uint8Array;
+  if (templateInput && templateInput.length > 0) {
+    input = templateInput;
+  } else {
+    const tpl = resolveBulletinTemplateDocxPath();
+    if (!fs.existsSync(tpl)) {
+      throw new Error(
+        `Bulletin template not found. Place template.docx (or TEMPLATE.docx) in ${bulletinTemplateDir()}`
+      );
+    }
+    input = fs.readFileSync(tpl);
   }
-
-  const input = fs.readFileSync(tpl);
   const zip = new PizZip(input);
   const doc = zip.file("word/document.xml");
   if (!doc) {

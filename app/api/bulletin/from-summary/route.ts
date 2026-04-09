@@ -10,6 +10,10 @@ import { buildBulletinDocxBuffer } from "@/lib/bulletin/build-bulletin-docx";
 
 export const runtime = "nodejs";
 
+function getCloudTemplatePathForUser(userId: string): string {
+  return `bulletin-templates/${userId}/template.docx`;
+}
+
 export async function POST(request: NextRequest) {
   try {
     const authHeader = request.headers.get("authorization");
@@ -51,7 +55,22 @@ export async function POST(request: NextRequest) {
     }
 
     const bulletin = memberSummaryToBulletinJson(summary);
-    const buffer = buildBulletinDocxBuffer(bulletin);
+
+    // Prefer user-uploaded cloud template; fall back to repo template for local/dev compatibility.
+    let cloudTemplateBuffer: Buffer | undefined;
+    try {
+      const path = getCloudTemplatePathForUser(user.id);
+      const { data: templateBlob, error: dlErr } = await supabase.storage
+        .from("Audivine")
+        .download(path);
+      if (!dlErr && templateBlob) {
+        cloudTemplateBuffer = Buffer.from(await templateBlob.arrayBuffer());
+      }
+    } catch {
+      // Ignore and fall back to local template file.
+    }
+
+    const buffer = buildBulletinDocxBuffer(bulletin, cloudTemplateBuffer);
     const safeDate = (bulletin.date || "undated").replace(/\./g, "-");
     const filename = `SundayBulletin_${safeDate}.docx`;
 

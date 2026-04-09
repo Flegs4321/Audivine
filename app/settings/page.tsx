@@ -325,6 +325,9 @@ export default function SettingsPage() {
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [logoFile, setLogoFile] = useState<File | null>(null);
+  const [bulletinTemplateFile, setBulletinTemplateFile] = useState<File | null>(null);
+  const [uploadingBulletinTemplate, setUploadingBulletinTemplate] = useState(false);
+  const [cloudBulletinTemplateExists, setCloudBulletinTemplateExists] = useState<boolean | null>(null);
   const [churchName, setChurchName] = useState("");
   const [openaiApiKey, setOpenaiApiKey] = useState("");
   const [memberSummaryOpenaiModel, setMemberSummaryOpenaiModel] = useState("gpt-4o-mini");
@@ -405,8 +408,26 @@ export default function SettingsPage() {
     if (user) {
       loadSettings();
       loadSpeakers();
+      loadBulletinTemplateStatus();
     }
   }, [user]);
+
+  const loadBulletinTemplateStatus = async () => {
+    try {
+      const { supabase } = await import("@/lib/supabase/client");
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) return;
+      const response = await fetch("/api/settings/bulletin-template", {
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      });
+      if (!response.ok) return;
+      const data = await response.json().catch(() => ({}));
+      setCloudBulletinTemplateExists(!!data.exists);
+    } catch {
+      // Keep null on error; local template still works.
+      setCloudBulletinTemplateExists(null);
+    }
+  };
 
   const loadSettings = async () => {
     try {
@@ -1621,6 +1642,60 @@ export default function SettingsPage() {
     }
   };
 
+  const handleUploadBulletinTemplate = async () => {
+    if (!bulletinTemplateFile) return;
+    setError(null);
+    setUploadingBulletinTemplate(true);
+    try {
+      const { supabase } = await import("@/lib/supabase/client");
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) throw new Error("Not authenticated");
+
+      const formData = new FormData();
+      formData.append("file", bulletinTemplateFile);
+
+      const response = await fetch("/api/settings/upload-bulletin-template", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${session.access_token}` },
+        body: formData,
+      });
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.message || errData.error || "Failed to upload bulletin template");
+      }
+
+      setBulletinTemplateFile(null);
+      setCloudBulletinTemplateExists(true);
+      alert("Bulletin template uploaded. Word export will now use this cloud template on Vercel.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to upload bulletin template");
+    } finally {
+      setUploadingBulletinTemplate(false);
+    }
+  };
+
+  const handleRemoveCloudBulletinTemplate = async () => {
+    if (!confirm("Remove your cloud bulletin template? Exports will fall back to the bundled local template.")) return;
+    setError(null);
+    try {
+      const { supabase } = await import("@/lib/supabase/client");
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) throw new Error("Not authenticated");
+
+      const response = await fetch("/api/settings/bulletin-template", {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      });
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.message || errData.error || "Failed to remove cloud bulletin template");
+      }
+      setCloudBulletinTemplateExists(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to remove cloud bulletin template");
+    }
+  };
+
   // Show loading state while checking authentication
   if (authLoading || loading) {
     return (
@@ -1703,6 +1778,57 @@ export default function SettingsPage() {
               >
                 {uploading ? "Uploading..." : "Upload Logo"}
               </button>
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-slate-200/80 bg-white p-6 shadow-sm">
+            <h3 className="mb-2 text-xl font-semibold text-slate-900">Bulletin Word Template (Cloud)</h3>
+            <p className="mb-4 text-sm text-slate-600">
+              Upload a `.docx` template once and bulletin exports will use it on Vercel/serverless too (not just local).
+            </p>
+            <div className="mb-3 text-sm">
+              {cloudBulletinTemplateExists === true ? (
+                <span className="text-green-700">Cloud template is uploaded for your account.</span>
+              ) : cloudBulletinTemplateExists === false ? (
+                <span className="text-slate-600">No cloud template yet. Export will use bundled fallback template.</span>
+              ) : (
+                <span className="text-slate-500">Template status unknown.</span>
+              )}
+            </div>
+            <div className="space-y-4">
+              <div>
+                <label className="mb-2 block text-sm font-medium text-slate-700">
+                  Upload Bulletin Template (.docx)
+                </label>
+                <input
+                  type="file"
+                  accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                  onChange={(e) => setBulletinTemplateFile(e.target.files?.[0] || null)}
+                  className="block w-full text-sm text-slate-500 file:mr-4 file:rounded-lg file:border-0 file:bg-teal-50 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-teal-900 hover:file:bg-teal-100"
+                />
+                {bulletinTemplateFile && (
+                  <div className="mt-2 text-sm text-slate-600">
+                    Selected: {bulletinTemplateFile.name} ({(bulletinTemplateFile.size / 1024).toFixed(2)} KB)
+                  </div>
+                )}
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  onClick={handleUploadBulletinTemplate}
+                  disabled={!bulletinTemplateFile || uploadingBulletinTemplate}
+                  className="rounded-lg bg-teal-600 px-6 py-2 text-white hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {uploadingBulletinTemplate ? "Uploading..." : "Upload Cloud Template"}
+                </button>
+                {cloudBulletinTemplateExists && (
+                  <button
+                    onClick={handleRemoveCloudBulletinTemplate}
+                    className="rounded-lg bg-red-600 px-6 py-2 text-white hover:bg-red-700"
+                  >
+                    Remove Cloud Template
+                  </button>
+                )}
+              </div>
             </div>
           </div>
 
