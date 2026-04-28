@@ -299,6 +299,7 @@ export async function GET(request: NextRequest) {
       sermon_date: recording.sermon_date,
       sermon_time: recording.sermon_time,
       speaker: recording.speaker,
+      transcript_chunks: Array.isArray(recording.transcript_chunks) ? recording.transcript_chunks : [],
     }));
 
     return NextResponse.json({ sermons });

@@ -8,6 +8,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { getUserSummaryGenerationSettings } from "@/lib/ai/summary-generation-settings";
 import { getUserOpenAISettings } from "@/lib/openai/user-settings";
+import {
+  mergeTranscriptWithTags,
+  SpeakerTag,
+  TranscriptChunk,
+} from "@/lib/transcript/merge";
 
 export const runtime = "nodejs";
 
@@ -142,8 +147,52 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      // Combine all transcript chunks into full text, including speaker information
-      if (recording.transcript_chunks && Array.isArray(recording.transcript_chunks)) {
+      // -----------------------------------------------------------------
+      // Prefer editable_transcripts + transcript_speaker_tags when either
+      // exists. The merge happens in-memory; neither table is mutated.
+      // -----------------------------------------------------------------
+      const [editableRes, tagsRes] = await Promise.all([
+        supabase
+          .from("editable_transcripts")
+          .select("transcript_chunks")
+          .eq("recording_id", recordingId)
+          .eq("user_id", user.id)
+          .maybeSingle(),
+        supabase
+          .from("transcript_speaker_tags")
+          .select("*")
+          .eq("recording_id", recordingId)
+          .eq("user_id", user.id)
+          .order("timestamp_ms", { ascending: true }),
+      ]);
+
+      const editableChunks: TranscriptChunk[] | null =
+        editableRes.data && Array.isArray(editableRes.data.transcript_chunks)
+          ? (editableRes.data.transcript_chunks as TranscriptChunk[])
+          : null;
+      const tagRows = Array.isArray(tagsRes.data) ? tagsRes.data : [];
+      const speakerTags: SpeakerTag[] = tagRows.map((row: any) => ({
+        id: row.id,
+        timestampMs: row.timestamp_ms,
+        endTimestampMs: row.end_timestamp_ms,
+        speakerName: row.speaker_name,
+        role: row.role,
+        note: row.note,
+      }));
+
+      const useMerged = (editableChunks && editableChunks.length > 0) || speakerTags.length > 0;
+      if (useMerged) {
+        const sourceChunks: TranscriptChunk[] = editableChunks
+          ? editableChunks
+          : Array.isArray(recording.transcript_chunks)
+            ? (recording.transcript_chunks as TranscriptChunk[])
+            : [];
+        const merged = mergeTranscriptWithTags(sourceChunks, speakerTags);
+        fullTranscript = merged.fullText || sourceChunks.map((c) => c.text).join(" ");
+        if (!resolvedSermonSpeakerName && merged.sermonSpeakerName) {
+          resolvedSermonSpeakerName = merged.sermonSpeakerName;
+        }
+      } else if (recording.transcript_chunks && Array.isArray(recording.transcript_chunks)) {
         // Since speaker names are now included in the text itself (e.g., "John - Hello..."),
         // we can simply concatenate all chunks, ensuring proper spacing
         let transcriptWithSpeakers = "";

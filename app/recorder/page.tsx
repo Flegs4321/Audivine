@@ -1311,6 +1311,34 @@ function RecorderPageContent() {
         setUploadedUrl(result.url);
         console.log("[Recorder] Upload successful, recording ID:", result.recordingId);
 
+        try {
+          const { supabase } = await import("@/lib/supabase/client");
+          const {
+            data: { session },
+          } = await supabase.auth.getSession();
+          if (session?.access_token) {
+            const syncRes = await fetch(
+              `/api/sermons/${result.recordingId}/sync-speaker-tags-from-chunks`,
+              {
+                method: "POST",
+                headers: { Authorization: `Bearer ${session.access_token}` },
+              }
+            );
+            if (!syncRes.ok) {
+              const err = await syncRes.json().catch(() => ({}));
+              console.warn("[Recorder] Sync live speaker tags failed:", syncRes.status, err);
+            } else {
+              const syncData = await syncRes.json().catch(() => ({}));
+              console.log(
+                "[Recorder] Sync live speaker tags:",
+                typeof syncData.inserted === "number" ? `${syncData.inserted} inserted` : "ok"
+              );
+            }
+          }
+        } catch (syncErr) {
+          console.warn("[Recorder] Sync live speaker tags error:", syncErr);
+        }
+
         const sermonSeg = finalSegments.find((s) => s.type === "Sermon");
         if (sermonSeg) {
           const sermonEndMs =

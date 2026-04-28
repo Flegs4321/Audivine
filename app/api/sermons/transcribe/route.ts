@@ -8,6 +8,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { getUserOpenAISettings } from "@/lib/openai/user-settings";
+import { syncLiveSpeakerTagsFromRecordingChunks } from "@/lib/transcript/syncLiveSpeakerTags";
 
 export const runtime = "nodejs";
 
@@ -171,6 +172,15 @@ export async function POST(request: NextRequest) {
           .map((chunk: any) => chunk.text)
           .join(" ");
 
+        const syncEarly = await syncLiveSpeakerTagsFromRecordingChunks(supabase, {
+          recordingId,
+          userId: user.id,
+          transcriptChunks: existingRecording.transcript_chunks,
+        });
+        if (!syncEarly.ok) {
+          console.warn("[TRANSCRIBE] Live speaker tags sync (cached):", syncEarly.message);
+        }
+
         return NextResponse.json({
           success: true,
           transcript,
@@ -263,24 +273,14 @@ export async function POST(request: NextRequest) {
         }
       }
       
-      // Format text with speaker name prefix if speaker exists
-      // Format: "Speaker - text"
-      let formattedText = seg.text.trim();
-      if (speaker) {
-        // Check if text already has a speaker prefix to avoid double-prefixing
-        const alreadyHasSpeakerTag = /^\[[^\]]+\]:\s*/.test(formattedText) || /^[A-Za-z][A-Za-z\s]+\s+-\s+/.test(formattedText);
-        if (!alreadyHasSpeakerTag) {
-          formattedText = `${speaker} - ${formattedText}`;
-          console.log(`[TRANSCRIBE] Added speaker prefix: "${speaker} - ${formattedText.substring(0, 50)}..."`);
-        } else {
-          console.log(`[TRANSCRIBE] Text already has speaker tag: "${formattedText.substring(0, 50)}..."`);
-        }
-      } else {
-        console.log(`[TRANSCRIBE] No speaker found for chunk at ${whisperTimestamp}ms: "${formattedText.substring(0, 50)}..."`);
-      }
-      
+      // Keep the text *exactly* as Whisper returned it — speaker info is
+      // stored in the separate `speaker` field so the raw transcript stays
+      // untouched. The annotated view is derived in the UI by combining
+      // text + speaker + speakerTag chunks via timestamps.
+      const rawText = seg.text.trim();
+
       return {
-        text: formattedText,
+        text: rawText,
         timestampMs: whisperTimestamp,
         isFinal: true,
         speaker: speaker,
@@ -317,6 +317,15 @@ export async function POST(request: NextRequest) {
     if (updateError) {
       console.error("[TRANSCRIBE] Error storing transcript:", updateError);
       // Continue anyway - return the transcript even if DB update fails
+    } else {
+      const syncResult = await syncLiveSpeakerTagsFromRecordingChunks(supabase, {
+        recordingId,
+        userId: user.id,
+        transcriptChunks: allChunks,
+      });
+      if (!syncResult.ok) {
+        console.warn("[TRANSCRIBE] Live speaker tags sync failed:", syncResult.message);
+      }
     }
 
     const fullTranscript = transcriptionData.text || allChunks.map((c: any) => c.text).join(" ");
