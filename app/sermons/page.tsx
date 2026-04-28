@@ -6,30 +6,13 @@
 
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "../auth/context/AuthProvider";
 import Header from "../components/Header";
 import SermonAudioPlayer from "../components/SermonAudioPlayer";
-import TranscriptPanel from "./components/TranscriptPanel";
-import {
-  audioBufferToMp3,
-  decodeAudioBlob,
-  downloadBlob,
-  sanitizeFilename,
-  sliceAudioBuffer,
-  urlToMp3,
-} from "@/lib/audio/encode-mp3";
-
-interface TranscriptChunk {
-  text: string;
-  timestampMs: number;
-  isFinal?: boolean;
-  speaker?: string;
-  speakerTag?: boolean;
-  source?: "whisper" | "whisper-live";
-}
+import { downloadBlob, sanitizeFilename, urlToMp3 } from "@/lib/audio/encode-mp3";
 
 interface Sermon {
   id: string;
@@ -42,7 +25,14 @@ interface Sermon {
   sermon_date?: string | null;
   sermon_time?: string | null;
   speaker?: string | null;
-  transcript_chunks?: TranscriptChunk[];
+  transcript_chunks?: Array<{
+    text: string;
+    timestampMs: number;
+    isFinal?: boolean;
+    speaker?: string;
+    speakerTag?: boolean;
+    source?: "whisper" | "whisper-live";
+  }>;
 }
 
 interface Speaker {
@@ -71,16 +61,6 @@ export default function SermonsPage() {
   const [loadingSpeakers, setLoadingSpeakers] = useState(false);
   const [mp3DownloadingId, setMp3DownloadingId] = useState<string | null>(null);
   const [mp3Progress, setMp3Progress] = useState<number>(0);
-  const [transcribingId, setTranscribingId] = useState<string | null>(null);
-  const [transcriptOpenId, setTranscriptOpenId] = useState<string | null>(null);
-  const [transcriptError, setTranscriptError] = useState<string | null>(null);
-  const [transcribeStatus, setTranscribeStatus] = useState<string>("");
-
-  const getAccessToken = useCallback(async (): Promise<string | null> => {
-    const { supabase } = await import("@/lib/supabase/client");
-    const { data: { session } } = await supabase.auth.getSession();
-    return session?.access_token ?? null;
-  }, []);
 
   // Redirect to login if not authenticated
   useEffect(() => {
@@ -417,187 +397,6 @@ export default function SermonsPage() {
     }
   };
 
-  const hasTranscript = (sermon: Sermon): boolean => {
-    return Array.isArray(sermon.transcript_chunks) &&
-      sermon.transcript_chunks.some((c) => c?.text && c.text.trim().length > 0);
-  };
-
-  const handleToggleTranscript = async (sermon: Sermon) => {
-    setTranscriptError(null);
-
-    if (transcriptOpenId === sermon.id) {
-      setTranscriptOpenId(null);
-      return;
-    }
-
-    if (hasTranscript(sermon)) {
-      setTranscriptOpenId(sermon.id);
-      return;
-    }
-
-    setTranscriptOpenId(sermon.id);
-    await runTranscription(sermon);
-  };
-
-  const runTranscription = async (sermon: Sermon) => {
-    if (transcribingId) return;
-    setTranscribingId(sermon.id);
-    setTranscriptError(null);
-    setError(null);
-    setTranscribeStatus("Starting transcription…");
-
-    try {
-      const { supabase } = await import("@/lib/supabase/client");
-      const { data: { session } } = await supabase.auth.getSession();
-
-      if (!session?.access_token) {
-        throw new Error("Not authenticated. Please log in to transcribe sermons.");
-      }
-
-      // Try the fast path first: server-side single-file transcription.
-      setTranscribeStatus("Sending audio to Whisper…");
-      const response = await fetch("/api/sermons/transcribe", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${session.access_token}`,
-        },
-        body: JSON.stringify({
-          recordingId: sermon.id,
-          audioUrl: sermon.storage_url,
-        }),
-      });
-
-      const data = await response.json().catch(() => ({}));
-
-      if (response.ok) {
-        const chunks: TranscriptChunk[] = Array.isArray(data.chunks) ? data.chunks : [];
-        setSermons((prev) =>
-          prev.map((s) => (s.id === sermon.id ? { ...s, transcript_chunks: chunks } : s))
-        );
-        setTranscriptOpenId(sermon.id);
-        return;
-      }
-
-      // Detect "file too large" so we can fall back to chunked transcription.
-      const tooLarge =
-        response.status === 413 ||
-        /too large|exceeds 25MB/i.test(String(data?.error || data?.message || ""));
-
-      if (!tooLarge) {
-        const message = data.message || data.error || `Transcription failed (HTTP ${response.status})`;
-        throw new Error(message);
-      }
-
-      if (!sermon.storage_url) {
-        throw new Error("This recording has no audio URL, so it cannot be transcribed.");
-      }
-
-      // ---- Chunked fallback ---------------------------------------------------
-      // The original audio in Supabase Storage is read-only here: we fetch it,
-      // decode it in browser memory, and re-encode small mono MP3 slices that
-      // are uploaded to Whisper. The recording row's audio file is never
-      // overwritten — only transcript_chunks gets updated at the end.
-      await runChunkedTranscription(sermon, session.access_token);
-      setTranscriptOpenId(sermon.id);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Failed to transcribe sermon.";
-      console.error("Transcription error:", err);
-      setTranscriptError(message);
-    } finally {
-      setTranscribingId(null);
-      setTranscribeStatus("");
-    }
-  };
-
-  /**
-   * Client-side Whisper transcription for files that exceed OpenAI's 25 MB
-   * single-request limit. Decodes the original audio in memory, slices it
-   * into ~5-minute chunks, encodes each chunk as a small mono MP3, and
-   * uploads it to /api/sermons/transcribe-chunk one by one.
-   *
-   * IMPORTANT: this never re-uploads or modifies the original audio file in
-   * Supabase Storage. We only fetch the bytes for in-memory processing.
-   */
-  const runChunkedTranscription = async (sermon: Sermon, accessToken: string) => {
-    if (!sermon.storage_url) {
-      throw new Error("This recording has no audio URL.");
-    }
-
-    setTranscribeStatus("File is too large for one request — downloading audio for splitting…");
-    const audioResponse = await fetch(sermon.storage_url);
-    if (!audioResponse.ok) {
-      throw new Error(`Could not download audio (HTTP ${audioResponse.status}).`);
-    }
-    const originalBlob = await audioResponse.blob();
-
-    setTranscribeStatus("Decoding audio…");
-    const audioBuffer = await decodeAudioBlob(originalBlob);
-
-    const totalSeconds = audioBuffer.duration;
-    const CHUNK_SECONDS = 5 * 60; // ~5 min × 64 kbps mono ≈ 2.4 MB per chunk
-    const totalChunks = Math.max(1, Math.ceil(totalSeconds / CHUNK_SECONDS));
-
-    const allTranscriptChunks: TranscriptChunk[] = [];
-
-    for (let i = 0; i < totalChunks; i++) {
-      const startSec = i * CHUNK_SECONDS;
-      const endSec = Math.min(totalSeconds, (i + 1) * CHUNK_SECONDS);
-
-      setTranscribeStatus(`Encoding chunk ${i + 1} of ${totalChunks}…`);
-      const slice = sliceAudioBuffer(audioBuffer, startSec, endSec);
-      const mp3Blob = audioBufferToMp3(slice, { bitrateKbps: 64, mono: true });
-
-      setTranscribeStatus(`Transcribing chunk ${i + 1} of ${totalChunks}…`);
-      const formData = new FormData();
-      formData.append("audio", mp3Blob, `chunk-${i + 1}.mp3`);
-      formData.append("recordingId", sermon.id);
-      formData.append("offsetMs", String(Math.floor(startSec * 1000)));
-
-      const chunkResponse = await fetch("/api/sermons/transcribe-chunk", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${accessToken}` },
-        body: formData,
-      });
-
-      const chunkData = await chunkResponse.json().catch(() => ({}));
-      if (!chunkResponse.ok) {
-        const message =
-          chunkData.message || chunkData.error || `Chunk ${i + 1} failed (HTTP ${chunkResponse.status})`;
-        throw new Error(message);
-      }
-
-      const incoming: TranscriptChunk[] = Array.isArray(chunkData.chunks) ? chunkData.chunks : [];
-      allTranscriptChunks.push(...incoming);
-    }
-
-    setTranscribeStatus("Saving transcript…");
-    const saveResponse = await fetch("/api/sermons/save-transcript", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${accessToken}`,
-      },
-      body: JSON.stringify({
-        recordingId: sermon.id,
-        chunks: allTranscriptChunks,
-      }),
-    });
-
-    const saveData = await saveResponse.json().catch(() => ({}));
-    if (!saveResponse.ok) {
-      throw new Error(saveData.message || saveData.error || "Failed to save transcript.");
-    }
-
-    const finalChunks: TranscriptChunk[] = Array.isArray(saveData.chunks)
-      ? saveData.chunks
-      : allTranscriptChunks;
-
-    setSermons((prev) =>
-      prev.map((s) => (s.id === sermon.id ? { ...s, transcript_chunks: finalChunks } : s))
-    );
-  };
-
   const formatDuration = (seconds: number): string => {
     const hours = Math.floor(seconds / 3600);
     const minutes = Math.floor((seconds % 3600) / 60);
@@ -822,7 +621,7 @@ export default function SermonsPage() {
                                 onClick={() => handleEditSermon(sermon)}
                                 className={sermonRowActionClass}
                               >
-                                Edit
+                                Edit details
                               </button>
                               {sermon.storage_url && (
                                 <>
@@ -837,6 +636,7 @@ export default function SermonsPage() {
                                     type="button"
                                     onClick={() => router.push(`/recorder/review?id=${sermon.id}`)}
                                     className={sermonRowActionClass}
+                                    title="Transcript, tags, segments, and summaries"
                                   >
                                     Review
                                   </button>
@@ -850,23 +650,6 @@ export default function SermonsPage() {
                                     {mp3DownloadingId === sermon.id
                                       ? `Converting… ${Math.round(mp3Progress * 100)}%`
                                       : "Download MP3"}
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleToggleTranscript(sermon)}
-                                    disabled={transcribingId !== null && transcribingId !== sermon.id}
-                                    className={sermonRowActionClass}
-                                    title={hasTranscript(sermon)
-                                      ? "Show or hide the transcript"
-                                      : "Transcribe this sermon with OpenAI Whisper"}
-                                  >
-                                    {transcribingId === sermon.id
-                                      ? "Transcribing…"
-                                      : transcriptOpenId === sermon.id
-                                        ? "Hide Transcript"
-                                        : hasTranscript(sermon)
-                                          ? "View Transcript"
-                                          : "Transcribe"}
                                   </button>
                                 </>
                               )}
@@ -890,22 +673,6 @@ export default function SermonsPage() {
                             autoPlay
                           />
                         </div>
-                      )}
-                      {/* Transcript Panel */}
-                      {transcriptOpenId === sermon.id && (
-                        <TranscriptPanel
-                          sermonId={sermon.id}
-                          sermonTitle={sermon.title || ""}
-                          sermonFilename={sermon.filename || ""}
-                          originalChunks={Array.isArray(sermon.transcript_chunks) ? sermon.transcript_chunks : []}
-                          speakers={speakers.map((s) => ({ id: s.id, name: s.name }))}
-                          transcribing={transcribingId === sermon.id}
-                          transcribeStatus={transcribeStatus}
-                          outerError={transcriptError}
-                          onTranscribe={() => runTranscription(sermon)}
-                          onError={(msg) => setTranscriptError(msg)}
-                          getAccessToken={getAccessToken}
-                        />
                       )}
                     </div>
                   ))}

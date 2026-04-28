@@ -21,7 +21,7 @@ describe("parseSpeakerTagMarkerText", () => {
 describe("deriveLiveSpeakerTagsFromChunks", () => {
   it("keeps only speakerTag chunks in timestamp order", () => {
     const derived = deriveLiveSpeakerTagsFromChunks([
-      { text: "hello", timestampMs: 100, isFinal: true },
+      { text: "hello", timestampMs: 100 },
       {
         text: "A - sharing:",
         timestampMs: 2000,

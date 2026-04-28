@@ -1,7 +1,8 @@
 /**
  * TranscriptPanel
  *
- * Three-tab editor that lives below a sermon row in the library:
+ * Full transcript workflow: used on the sermon library Review page (and anywhere
+ * else you embed it):
  *
  *   1. Original     — read-only view of recordings.transcript_chunks (untouched).
  *   2. Editable     — the user's editable copy, stored in editable_transcripts.

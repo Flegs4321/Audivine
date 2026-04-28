@@ -4,13 +4,79 @@
 
 "use client";
 
-import { useState, useEffect, Suspense } from "react";
+import { useState, useEffect, Suspense, useCallback } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import type { FinalSection } from "@/lib/segmenter/types";
 import type { EditableSection } from "./types";
 import { useAuth } from "@/app/auth/context/AuthProvider";
 import Header from "@/app/components/Header";
 import { extractSegmentWavFromBlob } from "@/lib/audio/extract-segment-wav";
+import TranscriptPanel from "@/app/sermons/components/TranscriptPanel";
+import { runSermonTranscription } from "@/lib/sermons/run-transcription-client";
+
+function buildEditableSectionsFromRecording(recording: {
+  segments?: unknown;
+  transcript_chunks?: unknown;
+  duration?: number;
+}): EditableSection[] {
+  let loadedSections: FinalSection[] = [];
+
+  if (recording.segments && Array.isArray(recording.segments) && recording.segments.length > 0) {
+    const firstSegment = recording.segments[0] as { label?: string };
+    if (firstSegment.label) {
+      loadedSections = recording.segments as FinalSection[];
+    }
+  }
+
+  if (
+    loadedSections.length === 0 &&
+    recording.transcript_chunks &&
+    Array.isArray(recording.transcript_chunks) &&
+    recording.transcript_chunks.length > 0
+  ) {
+    const chunks = recording.transcript_chunks as Array<{
+      text: string;
+      timestampMs: number;
+      speaker?: string;
+    }>;
+    let fullText = "";
+    let currentSpeaker: string | null = null;
+
+    for (const chunk of chunks) {
+      if (chunk.speaker && chunk.speaker !== currentSpeaker) {
+        if (
+          !chunk.text.startsWith("[") ||
+          (!chunk.text.includes(" sharing:]") && !chunk.text.includes(" speaking:]"))
+        ) {
+          fullText += `\n[${chunk.speaker}]: `;
+        }
+        currentSpeaker = chunk.speaker;
+      } else if (!chunk.speaker && currentSpeaker) {
+        currentSpeaker = null;
+      }
+
+      fullText += chunk.text + " ";
+    }
+
+    const startMs = chunks[0]?.timestampMs || 0;
+    const endMs =
+      chunks[chunks.length - 1]?.timestampMs || (Number(recording.duration) || 0) * 1000;
+
+    loadedSections = [
+      {
+        label: "Other" as const,
+        startMs,
+        endMs,
+        text: fullText,
+      },
+    ];
+  }
+
+  return loadedSections.map((s: FinalSection, i: number) => ({
+    ...s,
+    id: `section-${i}`,
+  }));
+}
 
 function ReviewPageContent() {
   const router = useRouter();
@@ -37,6 +103,70 @@ function ReviewPageContent() {
   const [churchSettings, setChurchSettings] = useState<{ church_name?: string; church_address?: string }>({});
   const [fixRangeBySection, setFixRangeBySection] = useState<Record<string, { startSec: string; endSec: string; speaker: string }>>({});
   const [assigningRange, setAssigningRange] = useState<Record<string, boolean>>({});
+  const [transcribing, setTranscribing] = useState(false);
+  const [transcribeStatus, setTranscribeStatus] = useState("");
+  const [transcriptPanelError, setTranscriptPanelError] = useState<string | null>(null);
+
+  const getAccessToken = useCallback(async (): Promise<string | null> => {
+    const { supabase } = await import("@/lib/supabase/client");
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    return session?.access_token ?? null;
+  }, []);
+
+  const applyRecordingPayload = useCallback((rec: any) => {
+    setRecording(rec);
+    if (rec?.transcript_chunks && Array.isArray(rec.transcript_chunks)) {
+      setTranscriptChunks(rec.transcript_chunks);
+    } else {
+      setTranscriptChunks([]);
+    }
+    setSections(buildEditableSectionsFromRecording(rec));
+  }, []);
+
+  const runTranscriptionOnReview = useCallback(async () => {
+    if (!recordingId || !recording?.storage_url) {
+      setTranscriptPanelError("This recording has no audio URL to transcribe.");
+      return;
+    }
+    if (transcribing) return;
+    setTranscribing(true);
+    setTranscriptPanelError(null);
+    setTranscribeStatus("Starting transcription…");
+    try {
+      const token = await getAccessToken();
+      if (!token) throw new Error("Not authenticated. Please log in.");
+      await runSermonTranscription({
+        recordingId,
+        storageUrl: recording.storage_url,
+        accessToken: token,
+        onStatus: setTranscribeStatus,
+      });
+      const res = await fetch(`/api/recordings/${recordingId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.message || errData.error || `Reload failed (${res.status})`);
+      }
+      const data = await res.json();
+      if (!data.recording) throw new Error("Recording not found after transcribe");
+      applyRecordingPayload(data.recording);
+    } catch (err) {
+      console.error("[Review] Transcription error:", err);
+      setTranscriptPanelError(err instanceof Error ? err.message : "Transcription failed");
+    } finally {
+      setTranscribing(false);
+      setTranscribeStatus("");
+    }
+  }, [
+    recordingId,
+    recording?.storage_url,
+    transcribing,
+    getAccessToken,
+    applyRecordingPayload,
+  ]);
 
   // Load sections from recording
   useEffect(() => {
@@ -78,74 +208,13 @@ function ReviewPageContent() {
         }
 
         const data = await response.json();
-        const recording = data.recording;
+        const rec = data.recording;
 
-        if (!recording) {
+        if (!rec) {
           throw new Error("Recording not found");
         }
 
-        // Store recording data for export
-        setRecording(recording);
-
-        // Store transcript chunks for speaker checking and updating
-        if (recording.transcript_chunks && Array.isArray(recording.transcript_chunks)) {
-          setTranscriptChunks(recording.transcript_chunks);
-        }
-
-        // Check if we have sections already (from analysis)
-        // If segments exist and have label property, use them as sections
-        let loadedSections: FinalSection[] = [];
-
-        if (recording.segments && Array.isArray(recording.segments) && recording.segments.length > 0) {
-          // Check if segments have label (they're already classified sections)
-          const firstSegment = recording.segments[0];
-          if (firstSegment.label) {
-            // These are already FinalSection objects
-            loadedSections = recording.segments as FinalSection[];
-          }
-        }
-
-        // If no sections, convert transcript_chunks into a simple section
-        if (loadedSections.length === 0 && recording.transcript_chunks && Array.isArray(recording.transcript_chunks) && recording.transcript_chunks.length > 0) {
-          // Combine all transcript chunks into one section, including speaker information
-          const chunks = recording.transcript_chunks;
-          let fullText = "";
-          let currentSpeaker: string | null = null;
-          
-          for (const chunk of chunks) {
-            // If this chunk has a speaker and it's different from current, add speaker label
-            if (chunk.speaker && chunk.speaker !== currentSpeaker) {
-              // Check if this is a tag line (already has speaker info in text)
-              if (!chunk.text.startsWith("[") || (!chunk.text.includes(" sharing:]") && !chunk.text.includes(" speaking:]"))) {
-                fullText += `\n[${chunk.speaker}]: `;
-              }
-              currentSpeaker = chunk.speaker;
-            } else if (!chunk.speaker && currentSpeaker) {
-              // Speaker ended, reset
-              currentSpeaker = null;
-            }
-            
-            fullText += chunk.text + " ";
-          }
-          
-          const startMs = chunks[0]?.timestampMs || 0;
-          const endMs = chunks[chunks.length - 1]?.timestampMs || (recording.duration * 1000);
-
-          loadedSections = [{
-            label: "Other" as const,
-            startMs,
-            endMs,
-            text: fullText,
-          }];
-        }
-
-        // Convert to EditableSection format
-        setSections(
-          loadedSections.map((s: FinalSection, i: number) => ({
-            ...s,
-            id: `section-${i}`,
-          }))
-        );
+        applyRecordingPayload(rec);
 
         setLoading(false);
       } catch (err) {
@@ -156,7 +225,7 @@ function ReviewPageContent() {
     };
 
     loadSections();
-  }, [recordingId, user]);
+  }, [recordingId, user, applyRecordingPayload]);
 
   // Check if user has OpenAI or Anthropic key configured (member summaries)
   useEffect(() => {
@@ -740,12 +809,12 @@ function ReviewPageContent() {
         throw new Error("Not authenticated");
       }
 
-      // Combine all sections' transcripts
-      const fullTranscript = sections.map((s) => s.text).join("\n\n");
+      // Let the server build the transcript from the recording: it merges
+      // editable_transcripts + transcript_speaker_tags when present (same as
+      // the TranscriptPanel "Merged preview"), else falls back to
+      // recordings.transcript_chunks / segments.
 
-      // Get sermon speaker for MESSAGE header.
-      // Prefer explicit tagged lines like "Name - sermon speaker:" inside the sermon range,
-      // then fall back to the most frequent speaker in that range.
+      // Optional hint for MESSAGE: header — server also resolves from merged tags.
       let sermonSpeakerName: string | null = null;
       const sermonSection = sections.find((s) => s.label === "Sermon");
       if (sermonSection && transcriptChunks.length > 0) {
@@ -787,17 +856,16 @@ function ReviewPageContent() {
         }
       }
 
+      const body: { recordingId: string; sermonSpeakerName?: string } = { recordingId };
+      if (sermonSpeakerName) body.sermonSpeakerName = sermonSpeakerName;
+
       const response = await fetch("/api/sermons/generate-summary", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           "Authorization": `Bearer ${session.access_token}`,
         },
-        body: JSON.stringify({
-          recordingId,
-          transcript: fullTranscript,
-          sermonSpeakerName: sermonSpeakerName ?? undefined,
-        }),
+        body: JSON.stringify(body),
       });
 
       if (!response.ok) {
@@ -983,7 +1051,7 @@ function ReviewPageContent() {
       <div className="flex-1 p-6">
         <div className="max-w-6xl mx-auto">
         <div className="mb-6 flex justify-between items-center">
-          <h1 className="text-3xl font-bold text-slate-900">Review Sections</h1>
+          <h1 className="text-3xl font-bold text-slate-900">Review recording</h1>
           <div className="space-x-4">
             {hasSummaryApiKey === false && (
               <div className="bg-yellow-50 border border-yellow-200 rounded-lg px-4 py-2 mr-4">
@@ -996,9 +1064,15 @@ function ReviewPageContent() {
             <button
               type="button"
               onClick={generateFullSummary}
-              disabled={generatingSummary || sections.length === 0 || hasSummaryApiKey === false}
+              disabled={generatingSummary || !recording || hasSummaryApiKey === false}
               className="rounded-lg border border-teal-600 bg-teal-600 px-6 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-50"
-              title={hasSummaryApiKey === false ? "OpenAI or Anthropic API key required. Configure in Settings." : ""}
+              title={
+                hasSummaryApiKey === false
+                  ? "OpenAI or Anthropic API key required. Configure in Settings."
+                  : !recording
+                    ? "Loading recording…"
+                    : "Uses merged transcript (editable copy + speaker tags) when present; otherwise the recording transcript."
+              }
             >
               {generatingSummary ? "Generating..." : "Generate Summary for Members"}
             </button>
@@ -1020,11 +1094,40 @@ function ReviewPageContent() {
           </div>
         </div>
 
+        {recording && recording.storage_url && recordingId && (
+          <div className="mb-8 rounded-2xl border border-slate-200/80 bg-white p-6 shadow-sm">
+            <h2 className="text-lg font-semibold text-slate-900">Full transcript</h2>
+            <p className="mt-1 text-sm text-slate-600">
+              Original Whisper output, your editable copy, speaker tags, and merged preview — same
+              tools as the library. Run <span className="font-medium">Transcribe</span> here if there
+              is no text yet.
+            </p>
+            <TranscriptPanel
+              sermonId={recordingId}
+              sermonTitle={recording.title || ""}
+              sermonFilename={recording.filename || ""}
+              originalChunks={
+                Array.isArray(recording.transcript_chunks) ? recording.transcript_chunks : []
+              }
+              speakers={speakers.map((s) => ({ id: s.id, name: s.name }))}
+              transcribing={transcribing}
+              transcribeStatus={transcribeStatus}
+              outerError={transcriptPanelError}
+              onTranscribe={runTranscriptionOnReview}
+              onError={(msg) => setTranscriptPanelError(msg)}
+              getAccessToken={getAccessToken}
+            />
+          </div>
+        )}
+
         {sections.length === 0 ? (
           <div className="bg-white rounded-lg shadow p-6 text-center">
-            <p className="text-slate-600">No transcriptions found for this recording.</p>
+            <p className="text-slate-600">
+              No section breakdown yet{recording?.transcript_chunks?.length ? " (see full transcript above to transcribe or edit)" : ""}.
+            </p>
             <p className="text-sm text-slate-500 mt-2">
-              If this recording was just uploaded, transcriptions may still be processing.
+              If this recording was just uploaded, transcriptions may still be processing — or open{" "}
+              <strong>Full transcript</strong> and run Transcribe.
             </p>
           </div>
         ) : (
@@ -1236,7 +1339,7 @@ function ReviewPageContent() {
                           : "border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300"
                       }`}
                     >
-                      Transcript
+                      Segment text
                     </button>
                     <button
                       onClick={() => setActiveTab(section.id, "summary")}
@@ -1255,9 +1358,13 @@ function ReviewPageContent() {
               {/* Tab Content */}
               {(activeTabs[section.id] || "transcript") === "transcript" ? (
                 <div className="mb-4">
+                  <p className="text-xs text-slate-500 mb-2">
+                    Text stored with this segment for summaries and exports. For line-level edits, use{" "}
+                    <strong>Full transcript</strong> above (editable copy &amp; speaker tags).
+                  </p>
                   <div className="flex justify-between items-center mb-2">
                     <label className="block text-sm font-medium text-slate-700">
-                      Transcript
+                      Segment transcript
                     </label>
                     <button
                       onClick={() => toggleEditTranscript(section.id)}
