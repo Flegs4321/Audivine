@@ -163,6 +163,7 @@ function RecorderPageContent() {
     if (typeof window === "undefined") return false;
     return window.localStorage.getItem("recorder-sharing-hint-dismissed") === "1";
   });
+  const [liveTranscriptPanelOpen, setLiveTranscriptPanelOpen] = useState(true);
   const [isSecureContext, setIsSecureContext] = useState(true);
   /** Shown under Live Transcript when the speech engine reports errors (network, no-speech, etc.) */
   const [liveSpeechHint, setLiveSpeechHint] = useState<string | null>(null);
@@ -2185,10 +2186,25 @@ function RecorderPageContent() {
           {/* Live Transcript Panel */}
           <div className="lg:col-span-1">
             <div className="flex h-full flex-col rounded-2xl border border-slate-200/80 bg-white p-6 shadow-sm">
-              <h2 className="text-xl font-semibold text-slate-900 mb-2">
-                Live Transcript
-              </h2>
-              <div className="mb-4">
+              <div className="mb-2 flex items-start justify-between gap-3">
+                <h2 className="text-xl font-semibold text-slate-900">Live Transcript</h2>
+                <button
+                  type="button"
+                  onClick={() => setLiveTranscriptPanelOpen((open) => !open)}
+                  className="shrink-0 rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-100"
+                  aria-expanded={liveTranscriptPanelOpen}
+                >
+                  {liveTranscriptPanelOpen ? "Hide panel" : "Show panel"}
+                </button>
+              </div>
+              {!liveTranscriptPanelOpen && (
+                <p className="text-sm text-slate-600">
+                  Transcription still runs in the background while you record; open the panel anytime to see captions or troubleshooting controls.
+                </p>
+              )}
+              {liveTranscriptPanelOpen && (
+                <>
+                  <div className="mb-4">
                 <div className="text-xs text-slate-500">
                   Method: <span className="font-medium text-slate-600">
                     {transcriptionMethod === "browser"
@@ -2359,6 +2375,8 @@ function RecorderPageContent() {
                   </div>
                 )}
               </div>
+                </>
+              )}
             </div>
           </div>
         </div>
