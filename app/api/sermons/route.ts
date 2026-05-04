@@ -8,6 +8,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 
+/** Always hit Supabase; never serve a cached sermon list from Vercel/edge. */
+export const dynamic = "force-dynamic";
+
 export const runtime = "nodejs";
 
 async function getSupabaseClient(request: NextRequest) {
@@ -302,7 +305,16 @@ export async function GET(request: NextRequest) {
       transcript_chunks: Array.isArray(recording.transcript_chunks) ? recording.transcript_chunks : [],
     }));
 
-    return NextResponse.json({ sermons });
+    return NextResponse.json(
+      { sermons },
+      {
+        headers: {
+          "Cache-Control": "private, no-store, max-age=0, must-revalidate",
+          Pragma: "no-cache",
+          Vary: "Authorization",
+        },
+      }
+    );
   } catch (error) {
     console.error("Sermons API error:", error);
     return NextResponse.json(

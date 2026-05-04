@@ -6,7 +6,7 @@
 
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "../auth/context/AuthProvider";
@@ -88,15 +88,7 @@ export default function SermonsPage() {
     }
   }, [user, authLoading, router]);
 
-  // Load sermons from database
-  useEffect(() => {
-    if (user) {
-      loadSermons();
-      loadSpeakers();
-    }
-  }, [user]);
-
-  const loadSpeakers = async () => {
+  const loadSpeakers = useCallback(async () => {
     try {
       setLoadingSpeakers(true);
       const { supabase } = await import("@/lib/supabase/client");
@@ -119,17 +111,15 @@ export default function SermonsPage() {
     } finally {
       setLoadingSpeakers(false);
     }
-  };
+  }, []);
 
-
-  const loadSermons = async () => {
+  const loadSermons = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
       
       console.log("[Client] Fetching sermons...");
       
-      // Get the session token from Supabase client
       const { supabase } = await import("@/lib/supabase/client");
       const { data: { session } } = await supabase.auth.getSession();
       
@@ -137,7 +127,6 @@ export default function SermonsPage() {
         "Cache-Control": "no-cache",
       };
       
-      // Add authorization header if we have a session
       if (session?.access_token) {
         headers["Authorization"] = `Bearer ${session.access_token}`;
         console.log("[Client] Added auth token to request");
@@ -145,21 +134,18 @@ export default function SermonsPage() {
         console.warn("[Client] No session token available");
       }
       
-      // Add cache-busting to ensure fresh data
-      const response = await fetch("/api/sermons", {
+      const response = await fetch(`/api/sermons?_=${Date.now()}`, {
         cache: "no-store",
         headers: headers,
       });
       
       console.log("[Client] Response status:", response.status, response.statusText);
-      console.log("[Client] Response headers:", Object.fromEntries(response.headers.entries()));
       
       if (response.ok) {
         const data = await response.json();
         console.log("[Client] Loaded sermons:", data.sermons?.length || 0);
         setSermons(data.sermons || []);
       } else {
-        // Try to get error text
         let errorText = "";
         try {
           errorText = await response.text();
@@ -174,7 +160,6 @@ export default function SermonsPage() {
           try {
             errorData = JSON.parse(errorText);
           } catch (e) {
-            // Not JSON, use as plain text
             errorData = { error: errorText, message: errorText };
           }
         } else {
@@ -184,17 +169,8 @@ export default function SermonsPage() {
           };
         }
         
-        // Log each piece separately for better visibility
         console.error("[Client] HTTP Status:", response.status);
-        console.error("[Client] Status Text:", response.statusText);
-        console.error("[Client] Error Text:", errorText);
         console.error("[Client] Error Data:", errorData);
-        console.error("[Client] Full error object:", {
-          status: response.status,
-          statusText: response.statusText,
-          errorText: errorText,
-          errorData: errorData
-        });
         
         const errorMessage = errorData.error || errorData.message || `Failed to load sermons (HTTP ${response.status})`;
         console.error("[Client] Setting error message:", errorMessage);
@@ -206,7 +182,28 @@ export default function SermonsPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    if (user) {
+      void loadSermons();
+      void loadSpeakers();
+    }
+  }, [user, loadSermons, loadSpeakers]);
+
+  useEffect(() => {
+    if (!user) return;
+    const refresh = () => void loadSermons();
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [user, loadSermons]);
 
   const handleFileUpload = async () => {
     if (!uploadFile) return;
@@ -261,8 +258,6 @@ export default function SermonsPage() {
 
     console.log("Deleting sermon with ID:", id, "Type:", typeof id);
 
-    // Optimistically remove from UI immediately
-    setSermons((prev) => prev.filter((sermon) => sermon.id !== id));
     setError(null);
 
     try {
@@ -591,8 +586,24 @@ export default function SermonsPage() {
           {/* Library Section */}
           <div className="lg:col-span-2">
             <div className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-sm">
-              <div className="border-b border-slate-200 p-6">
-                <h2 className="text-xl font-semibold text-slate-900">All sermons ({sermons.length})</h2>
+              <div className="flex flex-col gap-3 border-b border-slate-200 p-6 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <h2 className="text-xl font-semibold text-slate-900">
+                    All sermons ({sermons.length})
+                  </h2>
+                  <p className="mt-1 text-xs text-slate-500">
+                    Loaded live from Supabase — refreshes when you open this tab or click refresh.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void loadSermons()}
+                  disabled={loading || !user}
+                  className={sermonRowActionClass}
+                  title="Reload the sermon list from the database"
+                >
+                  {loading ? "Loading…" : "Refresh list"}
+                </button>
               </div>
               {loading ? (
                 <div className="p-6 text-center text-slate-500">Loading...</div>
