@@ -11,6 +11,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { authenticate, isErrorResponse } from "@/lib/supabase/server-auth";
 import { mergeTranscriptWithTags, SpeakerTag, TranscriptChunk } from "@/lib/transcript/merge";
+import { pickMergeSourceTranscriptChunks } from "@/lib/transcript/pick-merge-source-chunks";
 
 export const runtime = "nodejs";
 
@@ -29,7 +30,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     const [recordingRes, editableRes, tagsRes] = await Promise.all([
       supabase
         .from("recordings")
-        .select("id, transcript_chunks")
+        .select("id, transcript_chunks, duration")
         .eq("id", id)
         .eq("user_id", user.id)
         .maybeSingle(),
@@ -72,11 +73,25 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       );
     }
 
-    const editableChunks: TranscriptChunk[] = Array.isArray(editableRes.data?.transcript_chunks)
-      ? (editableRes.data!.transcript_chunks as TranscriptChunk[])
-      : Array.isArray(recordingRes.data.transcript_chunks)
-        ? (recordingRes.data.transcript_chunks as TranscriptChunk[])
-        : [];
+    const recordingChunks = Array.isArray(recordingRes.data.transcript_chunks)
+      ? (recordingRes.data.transcript_chunks as TranscriptChunk[])
+      : [];
+
+    const editableChunks: TranscriptChunk[] | null =
+      editableRes.data && Array.isArray(editableRes.data.transcript_chunks)
+        ? (editableRes.data.transcript_chunks as TranscriptChunk[])
+        : null;
+
+    const durationSec =
+      typeof recordingRes.data.duration === "number" && Number.isFinite(recordingRes.data.duration)
+        ? recordingRes.data.duration
+        : 0;
+
+    const { chunks: mergeChunks, source } = pickMergeSourceTranscriptChunks({
+      recordingChunks,
+      editableChunks,
+      durationSeconds: durationSec,
+    });
 
     const tags: SpeakerTag[] = (tagsRes.data || []).map((row: any) => ({
       id: row.id,
@@ -87,11 +102,11 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       note: row.note,
     }));
 
-    const merged = mergeTranscriptWithTags(editableChunks, tags);
+    const merged = mergeTranscriptWithTags(mergeChunks, tags);
 
     return NextResponse.json({
       recordingId: id,
-      sourceTranscript: editableRes.data ? "editable" : "original",
+      sourceTranscript: source,
       tagCount: tags.length,
       ...merged,
     });

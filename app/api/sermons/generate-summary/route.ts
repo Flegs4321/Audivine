@@ -13,6 +13,7 @@ import {
   SpeakerTag,
   TranscriptChunk,
 } from "@/lib/transcript/merge";
+import { pickMergeSourceTranscriptChunks } from "@/lib/transcript/pick-merge-source-chunks";
 
 export const runtime = "nodejs";
 
@@ -182,11 +183,20 @@ export async function POST(request: NextRequest) {
 
       const useMerged = (editableChunks && editableChunks.length > 0) || speakerTags.length > 0;
       if (useMerged) {
-        const sourceChunks: TranscriptChunk[] = editableChunks
-          ? editableChunks
-          : Array.isArray(recording.transcript_chunks)
-            ? (recording.transcript_chunks as TranscriptChunk[])
-            : [];
+        const recordingChunks = Array.isArray(recording.transcript_chunks)
+          ? (recording.transcript_chunks as TranscriptChunk[])
+          : [];
+        const durationSec =
+          typeof recording.duration === "number" && Number.isFinite(recording.duration)
+            ? recording.duration
+            : 0;
+
+        const { chunks: sourceChunks } = pickMergeSourceTranscriptChunks({
+          recordingChunks,
+          editableChunks,
+          durationSeconds: durationSec,
+        });
+
         const merged = mergeTranscriptWithTags(sourceChunks, speakerTags);
         fullTranscript = merged.fullText || sourceChunks.map((c) => c.text).join(" ");
         if (!resolvedSermonSpeakerName && merged.sermonSpeakerName) {

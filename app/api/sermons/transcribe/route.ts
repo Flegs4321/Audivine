@@ -9,6 +9,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { getUserOpenAISettings } from "@/lib/openai/user-settings";
 import { syncLiveSpeakerTagsFromRecordingChunks } from "@/lib/transcript/syncLiveSpeakerTags";
+import {
+  hasCompleteBackedTranscript,
+  whisperBackedNonTagCharCount,
+  whisperMinCharsForDuration,
+} from "@/lib/transcript/whisper-backed-stats";
 
 export const runtime = "nodejs";
 
@@ -154,28 +159,29 @@ export async function POST(request: NextRequest) {
     // Also get existing chunks to preserve speaker information
     const { data: existingRecording } = await supabase
       .from("recordings")
-      .select("transcript_chunks, file_path")
+      .select("transcript_chunks, file_path, duration")
       .eq("id", recordingId)
       .eq("user_id", user.id)
       .single();
 
-    // Idempotency: only skip if this recording was already merged from Whisper.
-    // Browser live chunks and speaker-tag-only rows also have isFinal + timestampMs;
-    // treating those as "done" wrongly skipped Whisper (e.g. only speaker tags saved → no text).
-    if (existingRecording?.transcript_chunks && Array.isArray(existingRecording.transcript_chunks) && existingRecording.transcript_chunks.length > 0) {
-      const alreadyWhispered = existingRecording.transcript_chunks.some(
-        (chunk: any) => chunk?.source === "whisper"
-      );
+    const durationSec =
+      typeof (existingRecording as { duration?: unknown })?.duration === "number"
+        ? ((existingRecording as { duration: number }).duration ?? 0)
+        : 0;
 
-      if (alreadyWhispered) {
-        const transcript = existingRecording.transcript_chunks
-          .map((chunk: any) => chunk.text)
+    // Idempotency: skip Whisper only when we already have enough whisper/live-backed text
+    // for this recording length (tags + sparse browser captions alone must not count).
+    const existingChunks = existingRecording?.transcript_chunks;
+    if (existingChunks && Array.isArray(existingChunks) && existingChunks.length > 0) {
+      if (hasCompleteBackedTranscript(existingChunks, durationSec)) {
+        const transcript = (existingChunks as Array<{ text?: string }>)
+          .map((chunk) => chunk.text ?? "")
           .join(" ");
 
         const syncEarly = await syncLiveSpeakerTagsFromRecordingChunks(supabase, {
           recordingId,
           userId: user.id,
-          transcriptChunks: existingRecording.transcript_chunks,
+          transcriptChunks: existingChunks,
         });
         if (!syncEarly.ok) {
           console.warn("[TRANSCRIBE] Live speaker tags sync (cached):", syncEarly.message);
@@ -184,9 +190,23 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({
           success: true,
           transcript,
-          chunks: existingRecording.transcript_chunks,
+          chunks: existingChunks,
           recordingId,
         });
+      }
+
+      const backedChars = whisperBackedNonTagCharCount(existingChunks as unknown[]);
+      const minChars = whisperMinCharsForDuration(durationSec);
+      if (
+        (existingChunks as unknown[]).some((raw) => {
+          const c = raw as { source?: string };
+          return c.source === "whisper" || c.source === "whisper-live";
+        }) &&
+        backedChars < minChars
+      ) {
+        console.warn(
+          `[TRANSCRIBE] Re-running Whisper: backed transcript only ${backedChars} chars (need ~${minChars} for ${durationSec}s)`
+        );
       }
     }
     

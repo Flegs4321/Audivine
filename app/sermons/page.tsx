@@ -13,6 +13,8 @@ import { useAuth } from "../auth/context/AuthProvider";
 import Header from "../components/Header";
 import SermonAudioPlayer from "../components/SermonAudioPlayer";
 import { downloadBlob, sanitizeFilename, urlToMp3 } from "@/lib/audio/encode-mp3";
+import { runSermonTranscription } from "@/lib/sermons/run-transcription-client";
+import { hasCompleteBackedTranscript } from "@/lib/transcript/whisper-backed-stats";
 
 interface Sermon {
   id: string;
@@ -41,9 +43,24 @@ interface Speaker {
   created_at: string;
 }
 
-/** Matches app secondary actions (outline, not yellow/green/red). */
+/** Slightly tighter than px-4 py-2 but same labels/readability as the original row actions. */
 const sermonRowActionClass =
-  "rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition-colors hover:border-slate-300 hover:bg-slate-50";
+  "rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 shadow-sm transition-colors hover:border-slate-300 hover:bg-slate-50";
+
+/** Plain transcript for export: omit speaker-tag marker lines so the file reads like speech + captions. */
+function transcriptChunksToPlainText(
+  chunks: NonNullable<Sermon["transcript_chunks"]>
+): string {
+  return [...chunks]
+    .filter((c) => {
+      if (!c.text?.trim()) return false;
+      if (c.speakerTag) return false;
+      return true;
+    })
+    .sort((a, b) => (a.timestampMs ?? 0) - (b.timestampMs ?? 0))
+    .map((c) => c.text.trim())
+    .join("\n\n");
+}
 
 export default function SermonsPage() {
   const router = useRouter();
@@ -61,6 +78,8 @@ export default function SermonsPage() {
   const [loadingSpeakers, setLoadingSpeakers] = useState(false);
   const [mp3DownloadingId, setMp3DownloadingId] = useState<string | null>(null);
   const [mp3Progress, setMp3Progress] = useState<number>(0);
+  const [transcriptWorkingId, setTranscriptWorkingId] = useState<string | null>(null);
+  const [transcriptStatus, setTranscriptStatus] = useState<string | null>(null);
 
   // Redirect to login if not authenticated
   useEffect(() => {
@@ -368,6 +387,89 @@ export default function SermonsPage() {
     }
   };
 
+  const handleTranscriptionDownload = async (sermon: Sermon) => {
+    if (!sermon.storage_url) {
+      setError("This sermon has no audio file to transcribe.");
+      return;
+    }
+    if (transcriptWorkingId !== null) return;
+
+    const baseName = sanitizeFilename(
+      sermon.title || sermon.filename?.replace(/\.[^/.]+$/, "") || `sermon-${sermon.id}`
+    );
+
+    const chunksUnknown = sermon.transcript_chunks as unknown[] | undefined;
+    const hasFullBacked =
+      chunksUnknown?.length &&
+      hasCompleteBackedTranscript(chunksUnknown, sermon.duration ?? 0);
+
+    if (hasFullBacked && sermon.transcript_chunks) {
+      const text = transcriptChunksToPlainText(sermon.transcript_chunks);
+      if (!text.trim()) {
+        setError("Saved transcript is empty; try transcribing again.");
+        return;
+      }
+      const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+      downloadBlob(blob, `${baseName} transcription.txt`);
+      setError(null);
+      return;
+    }
+
+    setTranscriptWorkingId(sermon.id);
+    setTranscriptStatus(null);
+    setError(null);
+
+    try {
+      const { supabase } = await import("@/lib/supabase/client");
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
+      if (!session?.access_token) {
+        throw new Error("Not authenticated. Please log in.");
+      }
+
+      const chunks = await runSermonTranscription({
+        recordingId: sermon.id,
+        storageUrl: sermon.storage_url,
+        accessToken: session.access_token,
+        onStatus: (status) => setTranscriptStatus(status),
+      });
+
+      const text = transcriptChunksToPlainText(chunks);
+      if (!text.trim()) {
+        throw new Error("Transcription returned no text.");
+      }
+
+      const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+      downloadBlob(blob, `${baseName} transcription.txt`);
+      // Match saved transcript locally so the list stays accurate without reloading everything else.
+      setSermons((prev) =>
+        prev.map((s) =>
+          s.id === sermon.id
+            ? {
+                ...s,
+                transcript_chunks: chunks.map((c) => ({
+                  text: c.text,
+                  timestampMs: c.timestampMs,
+                  isFinal: c.isFinal ?? true,
+                  speaker: c.speaker,
+                  speakerTag: c.speakerTag,
+                  ...(c.source ? { source: c.source } : {}),
+                })),
+              }
+            : s
+        )
+      );
+    } catch (err) {
+      console.error("Transcription download error:", err);
+      setError(err instanceof Error ? err.message : "Transcription failed.");
+    } finally {
+      setTranscriptWorkingId(null);
+      setTranscriptStatus(null);
+    }
+  };
+
   const handleDownloadMp3 = async (sermon: Sermon) => {
     if (!sermon.storage_url) {
       setError("This sermon has no audio file available to download.");
@@ -594,12 +696,12 @@ export default function SermonsPage() {
                         </div>
                       ) : (
                         <>
-                          <div className="flex items-start justify-between">
-                            <div className="flex-1">
-                              <h3 className="text-lg font-semibold text-slate-900">
+                          <div className="flex flex-col gap-4">
+                            <div className="min-w-0 w-full">
+                              <h3 className="text-lg font-semibold text-slate-900 break-words">
                                 {sermon.title || sermon.filename}
                               </h3>
-                              <div className="flex items-center gap-4 mt-2 text-sm text-slate-500">
+                              <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-slate-500">
                                 <span>{formatDuration(sermon.duration)}</span>
                                 {sermon.sermon_date && (
                                   <span>{new Date(sermon.sermon_date).toLocaleDateString()}</span>
@@ -615,7 +717,7 @@ export default function SermonsPage() {
                                 </span>
                               </div>
                             </div>
-                            <div className="flex flex-wrap gap-2">
+                            <div className="flex w-full flex-wrap gap-2">
                               <button
                                 type="button"
                                 onClick={() => handleEditSermon(sermon)}
@@ -651,6 +753,17 @@ export default function SermonsPage() {
                                       ? `Converting… ${Math.round(mp3Progress * 100)}%`
                                       : "Download MP3"}
                                   </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleTranscriptionDownload(sermon)}
+                                    disabled={transcriptWorkingId !== null}
+                                    className={sermonRowActionClass}
+                                    title="Downloads spoken transcript text (.txt). Speaker-tag-only captions don’t count — if you only see tags or short previews from live captions, this runs Whisper on your recording (same as Review). Large files split automatically; uses your OpenAI key in Settings."
+                                  >
+                                    {transcriptWorkingId === sermon.id
+                                      ? "Transcribing…"
+                                      : "Download transcript (.txt)"}
+                                  </button>
                                 </>
                               )}
                               <button
@@ -664,6 +777,11 @@ export default function SermonsPage() {
                           </div>
                         </>
                       )}
+                      {editingId !== sermon.id &&
+                        transcriptWorkingId === sermon.id &&
+                        transcriptStatus && (
+                          <p className="mt-2 text-sm text-slate-600">{transcriptStatus}</p>
+                        )}
                       {/* Audio Player */}
                       {playingId === sermon.id && sermon.storage_url && (
                         <div className="mt-4 pt-4 border-t border-slate-200">

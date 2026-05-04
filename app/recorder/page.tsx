@@ -647,8 +647,13 @@ function RecorderPageContent() {
       // Close active segment if any
       if (activeSegment !== null && activeSegmentStartMs !== null) {
         const currentMs = getCurrentElapsedMs();
+        // `segmentsRef` is updated synchronously in segment handlers; React `segments` can lag one frame.
+        const closedPrefix =
+          segmentsRef.current.length > segments.length
+            ? segmentsRef.current
+            : segments;
         const finalSegments = [
-          ...segments,
+          ...closedPrefix,
           {
             type: activeSegment,
             startMs: activeSegmentStartMs,
@@ -660,7 +665,12 @@ function RecorderPageContent() {
         setActiveSegment(null);
         setActiveSegmentStartMs(null);
       } else {
-        segmentsRef.current = segments;
+        const refSegs = segmentsRef.current;
+        const stateSegs = segments;
+        segmentsRef.current =
+          stateSegs.length > refSegs.length
+            ? stateSegs
+            : refSegs;
       }
 
       // transcriptChunksRef is updated inside the chunk handler and is the source of truth for upload.
@@ -773,14 +783,18 @@ function RecorderPageContent() {
 
     // Close previous segment if any
     if (activeSegment !== null && activeSegmentStartMs !== null) {
-      setSegments((prev) => [
-        ...prev,
-        {
-          type: activeSegment,
-          startMs: activeSegmentStartMs,
-          endMs: currentMs,
-        },
-      ]);
+      setSegments((prev) => {
+        const next = [
+          ...prev,
+          {
+            type: activeSegment,
+            startMs: activeSegmentStartMs,
+            endMs: currentMs,
+          },
+        ];
+        segmentsRef.current = next;
+        return next;
+      });
     }
 
     // Start new segment
