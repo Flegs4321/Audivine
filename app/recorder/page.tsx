@@ -27,6 +27,7 @@ import {
   type LiveSpeakerRole,
   type LiveSpeakerTag,
 } from "@/lib/recorder/live-speaker-tags";
+import { isLikelyLiveCaptionHallucination } from "@/lib/recorder/live-caption-filter";
 import { uploadRecording } from "@/lib/supabase/storage";
 import { useAuth } from "../auth/context/AuthProvider";
 import Header from "../components/Header";
@@ -584,6 +585,10 @@ function RecorderPageContent() {
             }
             const data = (await res.json()) as { text?: string; skipped?: boolean };
             if (data.skipped || !data.text?.trim()) return;
+            if (isLikelyLiveCaptionHallucination(data.text)) {
+              console.warn("[Recorder] Dropped likely live Whisper hallucination:", data.text);
+              return;
+            }
             chunkHandlerRef.current?.({
               text: data.text.trim(),
               timestampMs: getCurrentElapsedMsFromRefs(),
@@ -1045,6 +1050,13 @@ function RecorderPageContent() {
     const handleChunk = (chunk: TranscriptChunk) => {
       if (!chunk || typeof chunk.text !== "string") {
         console.warn("[Recorder] Ignoring invalid chunk:", chunk);
+        return;
+      }
+      if (
+        chunk.source === "whisper-live" &&
+        isLikelyLiveCaptionHallucination(chunk.text)
+      ) {
+        console.warn("[Recorder] Dropped likely live Whisper hallucination:", chunk.text);
         return;
       }
       lastChunkTimeRef.current = Date.now();
@@ -1736,35 +1748,6 @@ function RecorderPageContent() {
                             );
                           })()}
                           <div className="flex flex-col gap-2 mt-3">
-                            {/* End Speaker / No Speaker buttons */}
-                            {currentSpeaker && (
-                              <div className="flex gap-2">
-                                <button
-                                  onClick={(e) => {
-                                    e.preventDefault();
-                                    e.stopPropagation();
-                                    handleEndSpeaker();
-                                  }}
-                                  className="flex-1 px-4 py-2 bg-orange-500 text-white rounded-lg hover:bg-orange-600 text-sm font-medium"
-                                  title="End current speaker (e.g., when they finish or moderator takes over)"
-                                >
-                                  End Speaker
-                                </button>
-                                <button
-                                  onClick={(e) => {
-                                    e.preventDefault();
-                                    e.stopPropagation();
-                                    handleEndSpeaker();
-                                    setShowMemberDropdown(false);
-                                    setKeepDropdownOpen(false);
-                                  }}
-                                  className="flex-1 px-4 py-2 bg-slate-500 text-white rounded-lg hover:bg-slate-600 text-sm font-medium"
-                                  title="No speaker at this time (e.g., moderator only)"
-                                >
-                                  No Speaker
-                                </button>
-                              </div>
-                            )}
                             <div className="flex gap-2">
                               <button
                                 onClick={() => {
@@ -1790,13 +1773,13 @@ function RecorderPageContent() {
                       </div>
                     )}
                     
-                    {/* Quick Tag Button and End Speaker for Sharing Time - Shows when dropdown is closed */}
+                    {/* Quick speaker controls for Sharing Time - shows when dropdown is closed */}
                     {activeSegment === "Sharing" && !showMemberDropdown && !keepDropdownOpen && (
                       <div className="flex flex-col gap-2 w-full max-w-lg mx-auto">
                         {!sharingHintDismissed && (
                           <div className="flex items-start gap-2 p-3 bg-slate-50 border border-slate-200 rounded-lg text-sm text-slate-800">
                             <p className="flex-1">
-                              Tap <strong>End Speaker</strong> when someone finishes, then <strong>Tag Speaker</strong> for the next person, to keep names correct.
+                              Choose the next speaker when they begin. The current speaker ends automatically when a new speaker is chosen.
                             </p>
                             <button
                               type="button"
@@ -1819,19 +1802,7 @@ function RecorderPageContent() {
                             }}
                             className="px-6 py-3 bg-green-600 text-white rounded-lg font-medium hover:bg-green-700 transition-all shadow-md"
                           >
-                            Tag Speaker
-                          </button>
-                          <button
-                            onClick={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              handleEndSpeaker();
-                            }}
-                            disabled={!currentSpeaker}
-                            className="px-6 py-3 bg-orange-500 text-white rounded-lg font-medium hover:bg-orange-600 transition-all shadow-md disabled:opacity-50 disabled:cursor-not-allowed"
-                            title={currentSpeaker ? "End current speaker before the next person (keeps names correct)" : "No speaker active"}
-                          >
-                            End Speaker
+                            {currentSpeaker ? "Choose New Speaker" : "Choose Speaker"}
                           </button>
                           <button
                             onClick={(e) => {
@@ -1847,7 +1818,9 @@ function RecorderPageContent() {
                           </button>
                         </div>
                         <p className="text-xs text-center text-slate-500">
-                          {currentSpeaker ? "Tap End Speaker when they finish, then Tag Speaker for the next person." : "Tag who is sharing; tap End Speaker when they finish."}
+                          {currentSpeaker
+                            ? "Choose the next speaker when they begin; the current speaker will end automatically."
+                            : "Choose who is speaking now. Each new choice ends the previous speaker."}
                         </p>
                       </div>
                     )}

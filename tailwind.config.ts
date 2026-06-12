@@ -9,7 +9,7 @@ const config: Config = {
   theme: {
     extend: {
       fontFamily: {
-        sans: ["var(--font-sans)", "system-ui", "sans-serif"],
+        sans: ["system-ui", "-apple-system", "Segoe UI", "sans-serif"],
       },
       boxShadow: {
         soft:
