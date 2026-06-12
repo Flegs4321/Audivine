@@ -42,10 +42,14 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       );
     }
 
+    const body = await request.json().catch(() => ({}));
+    const liveTags = Array.isArray(body?.liveTags) ? body.liveTags : null;
+
     const result = await syncLiveSpeakerTagsFromRecordingChunks(supabase, {
       recordingId: id,
       userId: user.id,
       transcriptChunks: recording.transcript_chunks,
+      liveTags,
     });
 
     if (!result.ok) {

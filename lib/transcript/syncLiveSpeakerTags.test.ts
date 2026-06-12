@@ -107,6 +107,38 @@ describe("syncLiveSpeakerTagsFromRecordingChunks", () => {
     });
   });
 
+  it("prefers explicit live tags with end timestamps over marker chunks", async () => {
+    const result = await syncLiveSpeakerTagsFromRecordingChunks(
+      mock.supabase as any,
+      {
+        recordingId: "rec-1",
+        userId: "user-1",
+        transcriptChunks: [
+          { text: "Old Marker - sharing:", timestampMs: 100, speakerTag: true },
+        ],
+        liveTags: [
+          {
+            timestampMs: 3000,
+            endTimestampMs: 9000,
+            speakerName: "New Speaker",
+            role: "sharing",
+          },
+        ],
+      }
+    );
+    expect(result).toEqual({ ok: true, inserted: 1 });
+    expect(mock.insertedRows).toHaveLength(1);
+    expect(mock.insertedRows[0]).toMatchObject({
+      recording_id: "rec-1",
+      user_id: "user-1",
+      timestamp_ms: 3000,
+      end_timestamp_ms: 9000,
+      speaker_name: "New Speaker",
+      role: "sharing",
+      tag_source: "live",
+    });
+  });
+
   it("returns inserted 0 when no tag markers and still runs delete", async () => {
     const result = await syncLiveSpeakerTagsFromRecordingChunks(
       mock.supabase as any,
