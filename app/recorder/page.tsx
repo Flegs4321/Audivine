@@ -1816,6 +1816,18 @@ function RecorderPageContent() {
                           >
                             Undo Last Tag
                           </button>
+                          <button
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              handleUndoLastSpeakerTag();
+                            }}
+                            disabled={liveSpeakerTags.length === 0}
+                            className="px-6 py-3 bg-slate-700 text-white rounded-lg font-medium hover:bg-slate-800 transition-all shadow-md disabled:opacity-50 disabled:cursor-not-allowed"
+                            title="Remove the most recent live speaker tag"
+                          >
+                            Undo Last Tag
+                          </button>
                         </div>
                         <p className="text-xs text-center text-slate-500">
                           {currentSpeaker
