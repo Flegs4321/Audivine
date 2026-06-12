@@ -10,11 +10,23 @@ import {
   type AudivineSpeechDebugDetail,
 } from "./providers/BrowserSpeechRecognitionProvider";
 import type { TranscriptChunk } from "./types/transcription";
-import { extractSegmentWavFromBlob } from "@/lib/audio/extract-segment-wav";
+import {
+  audioBufferToMp3,
+  decodeAudioBlob,
+  sliceAudioBuffer,
+} from "@/lib/audio/encode-mp3";
 import {
   formatRecordingDateTimeForFilename,
   sanitizeFilenameBase,
 } from "@/lib/recording/recording-filename";
+import {
+  addLiveSpeakerTag,
+  endActiveLiveSpeakerTag as endActiveLiveSpeakerTagTimeline,
+  shiftLiveSpeakerTagsForSegment,
+  undoLastLiveSpeakerTag,
+  type LiveSpeakerRole,
+  type LiveSpeakerTag,
+} from "@/lib/recorder/live-speaker-tags";
 import { uploadRecording } from "@/lib/supabase/storage";
 import { useAuth } from "../auth/context/AuthProvider";
 import Header from "../components/Header";
@@ -136,6 +148,7 @@ function RecorderPageContent() {
   const [elapsedTime, setElapsedTime] = useState(0); // in seconds
   const [transcriptChunks, setTranscriptChunks] = useState<TranscriptChunk[]>([]);
   const [currentSpeaker, setCurrentSpeaker] = useState<string | null>(null); // Track current speaker
+  const [liveSpeakerTags, setLiveSpeakerTags] = useState<LiveSpeakerTag[]>([]);
   const [members, setMembers] = useState<Array<{ id: string; name: string }>>([]);
   const [loadingMembers, setLoadingMembers] = useState(false);
   const [showMemberDropdown, setShowMemberDropdown] = useState(false);
@@ -150,6 +163,7 @@ function RecorderPageContent() {
   const [mimeType, setMimeType] = useState<string>("audio/webm");
   const [uploadStatus, setUploadStatus] = useState<"idle" | "uploading" | "success" | "error">("idle");
   const [uploadedUrl, setUploadedUrl] = useState<string | null>(null);
+  const [uploadedRecordingId, setUploadedRecordingId] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [audioDuration, setAudioDuration] = useState<number | null>(null);
   const [audioInputDevices, setAudioInputDevices] = useState<MediaDeviceInfo[]>([]);
@@ -209,6 +223,7 @@ function RecorderPageContent() {
   const audioUrlRef = useRef<string | null>(null);
   const segmentsRef = useRef<Segment[]>([]);
   const transcriptChunksRef = useRef<TranscriptChunk[]>([]);
+  const liveSpeakerTagsRef = useRef<LiveSpeakerTag[]>([]);
   const elapsedTimeRef = useRef<number>(0);
   /** Scroll container for live transcript (newest lines pinned to top). */
   const transcriptScrollRef = useRef<HTMLDivElement | null>(null);
@@ -333,12 +348,12 @@ function RecorderPageContent() {
   }, []);
 
   // Enumerate available audio input devices
-  const enumerateAudioDevices = async (forcePermission = false) => {
+  const enumerateAudioDevices = async (forcePermission = false): Promise<MediaDeviceInfo[]> => {
     try {
       // Check if mediaDevices API is available
       if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
         console.warn("Device enumeration not supported");
-        return;
+        return [];
       }
 
       // Request permission to access devices (required for device labels)
@@ -365,12 +380,16 @@ function RecorderPageContent() {
       
       setAudioInputDevices(audioInputs);
 
-      // Set the first device as default if none selected
-      if (audioInputs.length > 0 && !selectedDeviceId) {
-        setSelectedDeviceId(audioInputs[0].deviceId);
-      }
+      setSelectedDeviceId((currentId) => {
+        if (audioInputs.length === 0) return undefined;
+        if (currentId && audioInputs.some((d) => d.deviceId === currentId)) return currentId;
+        return audioInputs[0].deviceId;
+      });
+
+      return audioInputs;
     } catch (err) {
       console.error('Error enumerating audio devices:', err);
+      return [];
     }
   };
 
@@ -419,28 +438,56 @@ function RecorderPageContent() {
       }
 
       // Re-enumerate devices right before recording (in case a device was just plugged in)
-      await enumerateAudioDevices();
+      const audioInputs = await enumerateAudioDevices();
+
+      if (audioInputs.length === 0) {
+        throw new Error(
+          "No microphone found. Connect a microphone or audio input, then click Refresh next to the device list."
+        );
+      }
+
+      let deviceId = selectedDeviceId;
+      if (!deviceId || !audioInputs.some((d) => d.deviceId === deviceId)) {
+        deviceId = audioInputs[0].deviceId;
+        setSelectedDeviceId(deviceId);
+      }
+
+      const getMicrophoneError = (err: unknown): Error => {
+        if (err instanceof Error) {
+          if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
+            return new Error(
+              "Microphone permission denied. Please allow microphone access in your browser settings and try again."
+            );
+          }
+          if (err.name === "NotFoundError" || err.name === "DevicesNotFoundError") {
+            return new Error(
+              "No microphone found. Connect a microphone or audio input, then click Refresh next to the device list."
+            );
+          }
+          return new Error(`Failed to access microphone: ${err.message}`);
+        }
+        return new Error("Failed to access microphone. Please try again.");
+      };
 
       // Request microphone permission and get media stream with selected device
       let stream: MediaStream;
       try {
-        const audioConstraints: boolean | MediaTrackConstraints = selectedDeviceId
-          ? { deviceId: { exact: selectedDeviceId } }
-          : true;
-        stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: deviceId ? { deviceId: { ideal: deviceId } } : true,
+        });
       } catch (err) {
-        if (err instanceof Error) {
-          if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
-            throw new Error(
-              "Microphone permission denied. Please allow microphone access in your browser settings and try again."
-            );
-          } else if (err.name === "NotFoundError" || err.name === "DevicesNotFoundError") {
-            throw new Error("No microphone found. Please connect a microphone and try again.");
-          } else {
-            throw new Error(`Failed to access microphone: ${err.message}`);
+        if (
+          err instanceof Error &&
+          (err.name === "NotFoundError" || err.name === "DevicesNotFoundError")
+        ) {
+          try {
+            stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          } catch (fallbackErr) {
+            throw getMicrophoneError(fallbackErr);
           }
+        } else {
+          throw getMicrophoneError(err);
         }
-        throw new Error("Failed to access microphone. Please try again.");
       }
 
       mediaStreamRef.current = stream;
@@ -587,6 +634,7 @@ function RecorderPageContent() {
       setSegments([]);
       setUploadStatus("idle");
       setUploadedUrl(null);
+      setUploadedRecordingId(null);
       setUploadError(null);
       startTimeRef.current = Date.now();
       segmentsRef.current = [];
@@ -594,6 +642,8 @@ function RecorderPageContent() {
       elapsedTimeRef.current = 0;
       setCurrentSpeaker(null);
       currentSpeakerRef.current = null;
+      setLiveSpeakerTags([]);
+      liveSpeakerTagsRef.current = [];
       setRecentlyTaggedSpeakers([]);
       seenFinalTextsRef.current.clear();
       lastChunkTimeRef.current = 0;
@@ -644,9 +694,13 @@ function RecorderPageContent() {
         await new Promise((resolve) => setTimeout(resolve, 650));
       }
 
+      const recordingEndMs = getCurrentElapsedMs();
+      endActiveLiveSpeakerTag(recordingEndMs);
+      setCurrentSpeaker(null);
+      currentSpeakerRef.current = null;
+
       // Close active segment if any
       if (activeSegment !== null && activeSegmentStartMs !== null) {
-        const currentMs = getCurrentElapsedMs();
         // `segmentsRef` is updated synchronously in segment handlers; React `segments` can lag one frame.
         const closedPrefix =
           segmentsRef.current.length > segments.length
@@ -657,7 +711,7 @@ function RecorderPageContent() {
           {
             type: activeSegment,
             startMs: activeSegmentStartMs,
-            endMs: currentMs,
+            endMs: recordingEndMs,
           },
         ];
         setSegments(finalSegments);
@@ -781,6 +835,12 @@ function RecorderPageContent() {
 
     const currentMs = getCurrentElapsedMs();
 
+    if (segment !== activeSegment && currentSpeakerRef.current) {
+      endActiveLiveSpeakerTag(currentMs);
+      setCurrentSpeaker(null);
+      currentSpeakerRef.current = null;
+    }
+
     // Close previous segment if any
     if (activeSegment !== null && activeSegmentStartMs !== null) {
       setSegments((prev) => {
@@ -818,6 +878,9 @@ function RecorderPageContent() {
   const handleEndCurrentSegment = () => {
     if (state !== "recording" || activeSegment === null || activeSegmentStartMs === null) return;
     const currentMs = getCurrentElapsedMs();
+    endActiveLiveSpeakerTag(currentMs);
+    setCurrentSpeaker(null);
+    currentSpeakerRef.current = null;
     setSegments((prev) => {
       const next = [
         ...prev,
@@ -831,6 +894,87 @@ function RecorderPageContent() {
     setShowMemberDropdown(false);
     setShowSermonSpeakerDropdown(false);
     setKeepDropdownOpen(false);
+  };
+
+  const upsertLiveSpeakerTag = (
+    speakerName: string,
+    role: LiveSpeakerRole,
+    currentMs: number
+  ) => {
+    setLiveSpeakerTags((prev) => {
+      const next = addLiveSpeakerTag(prev, { speakerName, role, currentMs });
+      liveSpeakerTagsRef.current = next;
+      return next;
+    });
+  };
+
+  const endActiveLiveSpeakerTag = (currentMs: number) => {
+    setLiveSpeakerTags((prev) => {
+      if (prev.length === 0) {
+        liveSpeakerTagsRef.current = prev;
+        return prev;
+      }
+      const next = endActiveLiveSpeakerTagTimeline(prev, currentMs);
+      liveSpeakerTagsRef.current = next;
+      return next;
+    });
+  };
+
+  const handleUndoLastSpeakerTag = () => {
+    const currentTags = liveSpeakerTagsRef.current;
+    if (currentTags.length === 0) return;
+
+    const removed = currentTags[currentTags.length - 1];
+    const undone = undoLastLiveSpeakerTag(currentTags);
+    const next = undone.tags;
+    liveSpeakerTagsRef.current = next;
+    setLiveSpeakerTags(next);
+
+    currentSpeakerRef.current = undone.currentSpeaker;
+    setCurrentSpeaker(undone.currentSpeaker);
+    console.log("[Recorder] Undid speaker tag:", removed.speakerName, removed.role);
+  };
+
+  const syncLiveSpeakerTags = async (
+    recordingId: string,
+    tags: LiveSpeakerTag[]
+  ) => {
+    if (tags.length === 0) return;
+    const { supabase } = await import("@/lib/supabase/client");
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    if (!session?.access_token) return;
+
+    const syncRes = await fetch(
+      `/api/sermons/${recordingId}/sync-speaker-tags-from-chunks`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({ liveTags: tags }),
+      }
+    );
+    if (!syncRes.ok) {
+      const err = await syncRes.json().catch(() => ({}));
+      console.warn("[Recorder] Sync live speaker tags failed:", syncRes.status, err);
+    } else {
+      const syncData = await syncRes.json().catch(() => ({}));
+      console.log(
+        "[Recorder] Sync live speaker tags:",
+        typeof syncData.inserted === "number" ? `${syncData.inserted} inserted` : "ok"
+      );
+    }
+  };
+
+  const shiftLiveSpeakerTagsForSermon = (
+    tags: LiveSpeakerTag[],
+    sermonStartMs: number,
+    sermonEndMs: number
+  ): LiveSpeakerTag[] => {
+    return shiftLiveSpeakerTagsForSegment(tags, sermonStartMs, sermonEndMs);
   };
 
   const handleMemberSelect = async (memberName: string, keepOpen = false) => {
@@ -848,102 +992,7 @@ function RecorderPageContent() {
       const filtered = prev.filter(name => name !== memberName);
       return [memberName, ...filtered].slice(0, 5);
     });
-    
-    // Retroactively apply speaker to recent chunks (if tagging late)
-    // Find the last speaker tag or the start of the current segment
-    setTranscriptChunks((prev) => {
-      const chunks = [...prev];
-      let lastSpeakerTagIndex = -1;
-      let segmentStartIndex = -1;
-      
-      // Find the last speaker tag
-      for (let i = chunks.length - 1; i >= 0; i--) {
-        if (chunks[i].speakerTag) {
-          lastSpeakerTagIndex = i;
-          break;
-        }
-      }
-      
-      // Find the start of the current segment (if in Sharing segment)
-      if (activeSegment === "Sharing" && activeSegmentStartMs !== null) {
-        for (let i = chunks.length - 1; i >= 0; i--) {
-          if (chunks[i].timestampMs >= activeSegmentStartMs) {
-            segmentStartIndex = i;
-          } else {
-            break;
-          }
-        }
-      }
-      
-      // Determine where to start retroactive tagging
-      // Start from the last speaker tag, or segment start, or beginning of recent chunks (last 20)
-      const startIndex = Math.max(
-        lastSpeakerTagIndex + 1,
-        segmentStartIndex >= 0 ? segmentStartIndex : Math.max(0, chunks.length - 20)
-      );
-      
-      // Retroactively apply speaker to chunks without a speaker
-      // But stop if there's a gap of more than 12 seconds between consecutive chunks
-      const MAX_RETROACTIVE_GAP_MS = 12000; // 12 seconds
-      // Don't attribute the phrase you just said (e.g. "this is now sharing time") to the person you're tagging
-      const MIN_AGE_FOR_RETROACTIVE_MS = 4000; // 4 seconds: chunks within 4s of "now" are left untagged
-      let lastProcessedTimestamp = currentMs;
-      let shouldContinue = true;
-      
-      const updated = chunks.map((chunk, index) => {
-        if (!shouldContinue) return chunk;
-        
-        if (index >= startIndex && !chunk.speakerTag && !chunk.speaker) {
-          // Skip chunks that are too recent (likely the transition phrase you just said)
-          const ageMs = currentMs - chunk.timestampMs;
-          if (ageMs < MIN_AGE_FOR_RETROACTIVE_MS) return chunk;
-          
-          // Check if there's a gap of more than 12 seconds from the last processed chunk
-          const timeGap = lastProcessedTimestamp - chunk.timestampMs;
-          
-          if (timeGap > MAX_RETROACTIVE_GAP_MS) {
-            // Gap is too large, stop retroactive tagging
-            shouldContinue = false;
-            console.log(`[Recorder] Stopping retroactive tagging due to ${(timeGap / 1000).toFixed(1)}s gap`);
-            return chunk;
-          }
-          
-          // Also check gap to the next chunk (if exists) to catch pauses
-          if (index < chunks.length - 1) {
-            const nextChunk = chunks[index + 1];
-            const gapToNext = nextChunk.timestampMs - chunk.timestampMs;
-            if (gapToNext > MAX_RETROACTIVE_GAP_MS) {
-              // There's a large gap after this chunk, stop here
-              shouldContinue = false;
-              console.log(`[Recorder] Stopping retroactive tagging due to ${(gapToNext / 1000).toFixed(1)}s gap after chunk`);
-              return chunk;
-            }
-          }
-          
-          // Apply speaker as metadata only; do not rewrite chunk text (avoids repeating speaker name in transcript)
-          lastProcessedTimestamp = chunk.timestampMs;
-          return {
-            ...chunk,
-            speaker: memberName,
-          };
-        }
-        return chunk;
-      });
-      
-      // Insert member name as a special chunk in the transcript
-      // Format: "Name - sharing:" so OpenAI can recognize it
-      const memberChunk: TranscriptChunk = {
-        text: `${memberName} - sharing:`,
-        timestampMs: currentMs,
-        isFinal: true,
-        speaker: memberName,
-        speakerTag: true, // Mark as speaker tag for better visual distinction
-      };
-      
-      const finalUpdated = [...updated, memberChunk];
-      transcriptChunksRef.current = finalUpdated;
-      return finalUpdated;
-    });
+    upsertLiveSpeakerTag(memberName, "sharing", currentMs);
 
     // Keep dropdown open if requested (for consecutive tagging) or if keepDropdownOpen is true
     if (!keepOpen && !keepDropdownOpen) {
@@ -954,15 +1003,15 @@ function RecorderPageContent() {
       setMemberSearchQuery("");
     }
 
-    if (state === "recording" && transcription.isAvailable) {
-      await restartLiveTranscription("after sharing speaker tag");
-    }
+    // Speaker tagging is independent of the speech engine; keep recording/captions stable.
   };
 
   // Handle ending current speaker (for moderator or when speaker finishes)
   const handleEndSpeaker = () => {
     const currentMs = getCurrentElapsedMs();
     
+    endActiveLiveSpeakerTag(currentMs);
+
     // Clear current speaker
     setCurrentSpeaker(null);
     currentSpeakerRef.current = null;
@@ -980,107 +1029,13 @@ function RecorderPageContent() {
     // Set this speaker as the current speaker for subsequent chunks
     setCurrentSpeaker(speakerName);
     currentSpeakerRef.current = speakerName;
-    
-    // Retroactively apply speaker to recent chunks (if tagging late)
-    setTranscriptChunks((prev) => {
-      const chunks = [...prev];
-      let lastSpeakerTagIndex = -1;
-      let segmentStartIndex = -1;
-      
-      // Find the last speaker tag
-      for (let i = chunks.length - 1; i >= 0; i--) {
-        if (chunks[i].speakerTag) {
-          lastSpeakerTagIndex = i;
-          break;
-        }
-      }
-      
-      // Find the start of the current segment (if in Sermon segment)
-      if (activeSegment === "Sermon" && activeSegmentStartMs !== null) {
-        for (let i = chunks.length - 1; i >= 0; i--) {
-          if (chunks[i].timestampMs >= activeSegmentStartMs) {
-            segmentStartIndex = i;
-          } else {
-            break;
-          }
-        }
-      }
-      
-      // Determine where to start retroactive tagging
-      const startIndex = Math.max(
-        lastSpeakerTagIndex + 1,
-        segmentStartIndex >= 0 ? segmentStartIndex : Math.max(0, chunks.length - 20)
-      );
-      
-      // Retroactively apply speaker to chunks without a speaker
-      // But stop if there's a gap of more than 12 seconds between consecutive chunks
-      const MAX_RETROACTIVE_GAP_MS = 12000; // 12 seconds
-      // Don't attribute the phrase you just said (e.g. "we'll now hear from...") to the speaker you're tagging
-      const MIN_AGE_FOR_RETROACTIVE_MS = 4000; // 4 seconds: chunks within 4s of "now" are left untagged
-      let lastProcessedTimestamp = currentMs;
-      let shouldContinue = true;
-      
-      const updated = chunks.map((chunk, index) => {
-        if (!shouldContinue) return chunk;
-        
-        if (index >= startIndex && !chunk.speakerTag && !chunk.speaker) {
-          // Skip chunks that are too recent (likely the transition phrase you just said)
-          const ageMs = currentMs - chunk.timestampMs;
-          if (ageMs < MIN_AGE_FOR_RETROACTIVE_MS) return chunk;
-          
-          // Check if there's a gap of more than 12 seconds from the last processed chunk
-          const timeGap = lastProcessedTimestamp - chunk.timestampMs;
-          
-          if (timeGap > MAX_RETROACTIVE_GAP_MS) {
-            // Gap is too large, stop retroactive tagging
-            shouldContinue = false;
-            console.log(`[Recorder] Stopping retroactive tagging due to ${(timeGap / 1000).toFixed(1)}s gap`);
-            return chunk;
-          }
-          
-          // Also check gap to the next chunk (if exists) to catch pauses
-          if (index < chunks.length - 1) {
-            const nextChunk = chunks[index + 1];
-            const gapToNext = nextChunk.timestampMs - chunk.timestampMs;
-            if (gapToNext > MAX_RETROACTIVE_GAP_MS) {
-              // There's a large gap after this chunk, stop here
-              shouldContinue = false;
-              console.log(`[Recorder] Stopping retroactive tagging due to ${(gapToNext / 1000).toFixed(1)}s gap after chunk`);
-              return chunk;
-            }
-          }
-          
-          // Apply speaker as metadata only; do not rewrite chunk text (avoids repeating speaker name in transcript)
-          lastProcessedTimestamp = chunk.timestampMs;
-          return {
-            ...chunk,
-            speaker: speakerName,
-          };
-        }
-        return chunk;
-      });
-      
-      // Insert speaker name as a special chunk in the transcript (says "sermon speaker" so transcript is clear)
-      const speakerChunk: TranscriptChunk = {
-        text: `${speakerName} - sermon speaker:`,
-        timestampMs: currentMs,
-        isFinal: true,
-        speaker: speakerName,
-        speakerTag: true, // Mark as speaker tag for better visual distinction
-      };
-      
-      const finalUpdated = [...updated, speakerChunk];
-      transcriptChunksRef.current = finalUpdated;
-      return finalUpdated;
-    });
+    upsertLiveSpeakerTag(speakerName, "sermon", currentMs);
 
     // Close dropdown after selection
     setShowSermonSpeakerDropdown(false);
     setSermonSpeakerSearchQuery("");
 
-    if (state === "recording" && transcription.isAvailable) {
-      await restartLiveTranscription("after sermon speaker tag");
-    }
+    // Speaker tagging is independent of the speech engine; keep recording/captions stable.
   };
 
   // Build the actual chunk handler and store in ref so it always has latest setTranscriptChunks etc.
@@ -1221,8 +1176,13 @@ function RecorderPageContent() {
 
   // Handle automatic section analysis
   const handleAnalyzeSections = async () => {
-    if (!audioBlob || transcriptChunksRef.current.length === 0) {
-      setError("No recording or transcript available for analysis");
+    if (!uploadedRecordingId) {
+      setError("Recording is still uploading. Try Analyze Sections again after upload finishes.");
+      return;
+    }
+
+    if (transcriptChunksRef.current.length === 0) {
+      setError("No transcript available for analysis. Run transcription first, then analyze sections.");
       return;
     }
 
@@ -1230,35 +1190,28 @@ function RecorderPageContent() {
       setUploadStatus("uploading");
       setUploadError(null);
 
-      const response = await fetch("/api/analyze", {
+      const { supabase } = await import("@/lib/supabase/client");
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (!session?.access_token) {
+        throw new Error("Not authenticated. Please log in.");
+      }
+
+      const response = await fetch(`/api/recordings/${uploadedRecordingId}/detect-segments`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          chunks: transcriptChunksRef.current,
-          totalDurationMs: elapsedTimeRef.current * 1000,
-        }),
+        headers: { Authorization: `Bearer ${session.access_token}` },
       });
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || `Analysis failed: ${response.statusText}`);
+        throw new Error(
+          errorData.message || errorData.error || `Analysis failed: ${response.statusText}`
+        );
       }
 
-      const result = await response.json();
-
-      // Generate a recording ID (you can replace this with actual recording ID from upload)
-      const recordingId = uploadedUrl 
-        ? uploadedUrl.split("/").pop()?.split(".")[0] || `recording-${Date.now()}`
-        : `recording-${Date.now()}`;
-
-      // Store sections temporarily (replace with database save later)
-      localStorage.setItem(
-        `recording-sections-${recordingId}`,
-        JSON.stringify(result.sections)
-      );
-
-      // Navigate to review page
-      router.push(`/recorder/review?id=${recordingId}`);
+      setUploadStatus("success");
+      router.push(`/recorder/review?id=${uploadedRecordingId}`);
     } catch (err) {
       console.error("Analysis error:", err);
       setUploadError(err instanceof Error ? err.message : "Failed to analyze sections");
@@ -1271,11 +1224,13 @@ function RecorderPageContent() {
     setUploadStatus("uploading");
     setUploadError(null);
     setUploadedUrl(null);
+    setUploadedRecordingId(null);
 
     try {
       // Use refs to ensure we have the latest values
       const finalSegments = segmentsRef.current;
       const finalTranscriptChunks = transcriptChunksRef.current;
+      const finalLiveSpeakerTags = liveSpeakerTagsRef.current;
       const finalElapsedTime = elapsedTimeRef.current;
 
       // Use the transcription method from state (already loaded from settings)
@@ -1283,14 +1238,7 @@ function RecorderPageContent() {
       const currentTranscriptionMethod = transcriptionMethod || "browser";
       console.log("[Upload] Using transcription method:", currentTranscriptionMethod);
 
-      const hasMeaningfulBrowserTranscript = finalTranscriptChunks.some(
-        (c) =>
-          !c.speakerTag &&
-          typeof c.text === "string" &&
-          c.text.trim().length > 0
-      );
-      const shouldRunWhisperAfterUpload =
-        currentTranscriptionMethod === "openai" || !hasMeaningfulBrowserTranscript;
+      const shouldRunWhisperAfterUpload = hasConfiguredOpenAiKey;
 
       const recordedAt = new Date();
       const stamp = formatRecordingDateTimeForFilename(recordedAt);
@@ -1324,32 +1272,11 @@ function RecorderPageContent() {
       if (result.success && result.url && result.recordingId) {
         setUploadStatus("success");
         setUploadedUrl(result.url);
+        setUploadedRecordingId(result.recordingId);
         console.log("[Recorder] Upload successful, recording ID:", result.recordingId);
 
         try {
-          const { supabase } = await import("@/lib/supabase/client");
-          const {
-            data: { session },
-          } = await supabase.auth.getSession();
-          if (session?.access_token) {
-            const syncRes = await fetch(
-              `/api/sermons/${result.recordingId}/sync-speaker-tags-from-chunks`,
-              {
-                method: "POST",
-                headers: { Authorization: `Bearer ${session.access_token}` },
-              }
-            );
-            if (!syncRes.ok) {
-              const err = await syncRes.json().catch(() => ({}));
-              console.warn("[Recorder] Sync live speaker tags failed:", syncRes.status, err);
-            } else {
-              const syncData = await syncRes.json().catch(() => ({}));
-              console.log(
-                "[Recorder] Sync live speaker tags:",
-                typeof syncData.inserted === "number" ? `${syncData.inserted} inserted` : "ok"
-              );
-            }
-          }
+          await syncLiveSpeakerTags(result.recordingId, finalLiveSpeakerTags);
         } catch (syncErr) {
           console.warn("[Recorder] Sync live speaker tags error:", syncErr);
         }
@@ -1359,12 +1286,17 @@ function RecorderPageContent() {
           const sermonEndMs =
             sermonSeg.endMs ?? Math.round(finalElapsedTime * 1000);
           if (sermonEndMs > sermonSeg.startMs) {
-            const sermonWav = await extractSegmentWavFromBlob(
-              blob,
-              sermonSeg.startMs,
-              sermonSeg.endMs
-            );
-            if (sermonWav) {
+            try {
+              const decoded = await decodeAudioBlob(blob);
+              const sermonSlice = sliceAudioBuffer(
+                decoded,
+                sermonSeg.startMs / 1000,
+                sermonEndMs / 1000
+              );
+              const sermonMp3 = audioBufferToMp3(sermonSlice, {
+                bitrateKbps: 96,
+                mono: true,
+              });
               const sermonDurationSec = (sermonEndMs - sermonSeg.startMs) / 1000;
               const shiftedChunks = shiftTranscriptChunksForSermon(
                 finalTranscriptChunks.map((c) => ({
@@ -1375,6 +1307,11 @@ function RecorderPageContent() {
                   speakerTag: c.speakerTag,
                   ...(c.source ? { source: c.source } : {}),
                 })),
+                sermonSeg.startMs,
+                sermonEndMs
+              );
+              const shiftedLiveSpeakerTags = shiftLiveSpeakerTagsForSermon(
+                finalLiveSpeakerTags,
                 sermonSeg.startMs,
                 sermonEndMs
               );
@@ -1393,37 +1330,38 @@ function RecorderPageContent() {
                   },
                 ],
                 transcriptChunks: shiftedChunks,
-                mimeType: "audio/wav",
-                fileSize: sermonWav.size,
+                mimeType: "audio/mpeg",
+                fileSize: sermonMp3.size,
               };
-              const sermonUpload = await uploadRecording(sermonWav, sermonMeta);
+              const sermonUpload = await uploadRecording(sermonMp3, sermonMeta);
               if (!sermonUpload.success) {
                 console.error(
                   "[Recorder] Sermon extract upload failed:",
                   sermonUpload.error
                 );
+              } else if (sermonUpload.recordingId) {
+                await syncLiveSpeakerTags(
+                  sermonUpload.recordingId,
+                  shiftedLiveSpeakerTags
+                );
               }
-            } else {
+            } catch (sermonExtractError) {
               console.warn(
-                "[Recorder] Could not extract sermon segment audio (decode failed?)"
+                "[Recorder] Could not create MP3 sermon extract:",
+                sermonExtractError
               );
             }
           }
         }
         
-        // OpenAI setting: always Whisper. Browser setting: Whisper only if live captions produced no text
-        // (avoids "edit recording" showing only a speaker tag when Web Speech never ran).
+        // For the single-user workflow, Whisper is the trusted saved transcript.
+        // Browser/live captions remain useful during recording but are treated as preview text.
         if (shouldRunWhisperAfterUpload) {
           try {
             const { supabase } = await import("@/lib/supabase/client");
             const { data: { session } } = await supabase.auth.getSession();
             
             if (session?.access_token) {
-              if (currentTranscriptionMethod === "browser" && !hasMeaningfulBrowserTranscript) {
-                console.log(
-                  "[Upload] No live browser transcript; attempting Whisper so the saved recording has full text"
-                );
-              }
               console.log("[Upload] Starting OpenAI Whisper transcription for recording:", result.recordingId);
               const transcribeResponse = await fetch("/api/sermons/transcribe", {
                 method: "POST",
@@ -1460,28 +1398,20 @@ function RecorderPageContent() {
               } else {
                 const errorText = await transcribeResponse.text();
                 console.error("[Upload] Whisper transcription failed:", transcribeResponse.status, errorText);
-                if (currentTranscriptionMethod === "openai") {
-                  setError(`Whisper transcription failed: ${errorText}`);
-                }
+                setError(`Whisper transcription failed: ${errorText}`);
               }
             } else {
               console.error("[Upload] No session token available for Whisper transcription");
             }
           } catch (err) {
             console.error("[Upload] Error during OpenAI Whisper transcription:", err);
-            if (currentTranscriptionMethod === "openai") {
-              setError(`Whisper transcription error: ${err instanceof Error ? err.message : "Unknown error"}`);
-            }
+            setError(`Whisper transcription error: ${err instanceof Error ? err.message : "Unknown error"}`);
           }
         } else {
-          console.log("[Upload] Using browser transcription only (live text present), skipping Whisper");
+          console.log("[Upload] OpenAI key not configured; saved transcript will use live/browser text only");
         }
         
-        // Refresh sermons list after successful upload
-        // Navigate to sermons page to see the new recording
-        setTimeout(() => {
-          router.push("/sermons");
-        }, 1000);
+        console.log("[Recorder] Upload flow complete; staying on recorder for review actions.");
       } else {
         setUploadStatus("error");
         setUploadError(result.error || "Upload failed");
@@ -1638,6 +1568,11 @@ function RecorderPageContent() {
                 {(state === "recording" || state === "paused") && activeSegment && (
                   <div className="bg-sky-100 text-slate-800 px-6 py-3 rounded-lg font-semibold">
                     Active: {activeSegment}
+                    {liveSpeakerTags.length > 0 && (
+                      <span className="ml-3 text-xs font-medium text-slate-600">
+                        {liveSpeakerTags.length} speaker tag{liveSpeakerTags.length === 1 ? "" : "s"} saved
+                      </span>
+                    )}
                     {currentSpeaker && (
                       <span className="ml-3 text-teal-600">
                         • Current Speaker: <span className="font-bold">{currentSpeaker}</span>
@@ -1898,6 +1833,18 @@ function RecorderPageContent() {
                           >
                             End Speaker
                           </button>
+                          <button
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              handleUndoLastSpeakerTag();
+                            }}
+                            disabled={liveSpeakerTags.length === 0}
+                            className="px-6 py-3 bg-slate-700 text-white rounded-lg font-medium hover:bg-slate-800 transition-all shadow-md disabled:opacity-50 disabled:cursor-not-allowed"
+                            title="Remove the most recent live speaker tag"
+                          >
+                            Undo Last Tag
+                          </button>
                         </div>
                         <p className="text-xs text-center text-slate-500">
                           {currentSpeaker ? "Tap End Speaker when they finish, then Tag Speaker for the next person." : "Tag who is sharing; tap End Speaker when they finish."}
@@ -2104,17 +2051,25 @@ function RecorderPageContent() {
                 </div>
 
                 {/* Analyze Sections Button */}
-                {state === "stopped" && audioBlob && transcriptChunks.length > 0 && (
+                {state === "stopped" && audioBlob && uploadedRecordingId && (
                   <div className="mt-6 pt-6 border-t border-green-200">
-                    <button
-                      onClick={handleAnalyzeSections}
-                      disabled={uploadStatus === "uploading"}
-                      className="w-full rounded-xl bg-teal-600 px-8 py-4 text-lg font-semibold text-white shadow-sm transition-all hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      {uploadStatus === "uploading" ? "Analyzing..." : "Analyze Sections Automatically"}
-                    </button>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <button
+                        onClick={() => router.push(`/recorder/review?id=${uploadedRecordingId}`)}
+                        className="w-full rounded-xl bg-slate-800 px-8 py-4 text-lg font-semibold text-white shadow-sm transition-all hover:bg-slate-900"
+                      >
+                        Open Review
+                      </button>
+                      <button
+                        onClick={handleAnalyzeSections}
+                        disabled={uploadStatus === "uploading" || transcriptChunks.length === 0}
+                        className="w-full rounded-xl bg-teal-600 px-8 py-4 text-lg font-semibold text-white shadow-sm transition-all hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {uploadStatus === "uploading" ? "Analyzing..." : "Analyze Sections"}
+                      </button>
+                    </div>
                     <p className="mt-2 text-sm text-slate-600 text-center">
-                      Automatically detect and label Announcements, Sharing, and Sermon sections
+                      Review uses the saved recording and speaker tags. Analyze runs after Whisper has saved transcript text.
                     </p>
                   </div>
                 )}

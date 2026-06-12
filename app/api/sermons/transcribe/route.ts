@@ -178,13 +178,18 @@ export async function POST(request: NextRequest) {
           .map((chunk) => chunk.text ?? "")
           .join(" ");
 
-        const syncEarly = await syncLiveSpeakerTagsFromRecordingChunks(supabase, {
-          recordingId,
-          userId: user.id,
-          transcriptChunks: existingChunks,
-        });
-        if (!syncEarly.ok) {
-          console.warn("[TRANSCRIBE] Live speaker tags sync (cached):", syncEarly.message);
+        const hasMarkerTags = (existingChunks as unknown[]).some(
+          (raw) => (raw as { speakerTag?: unknown })?.speakerTag === true
+        );
+        if (hasMarkerTags) {
+          const syncEarly = await syncLiveSpeakerTagsFromRecordingChunks(supabase, {
+            recordingId,
+            userId: user.id,
+            transcriptChunks: existingChunks,
+          });
+          if (!syncEarly.ok) {
+            console.warn("[TRANSCRIBE] Live speaker tags sync (cached):", syncEarly.message);
+          }
         }
 
         return NextResponse.json({
@@ -338,13 +343,16 @@ export async function POST(request: NextRequest) {
       console.error("[TRANSCRIBE] Error storing transcript:", updateError);
       // Continue anyway - return the transcript even if DB update fails
     } else {
-      const syncResult = await syncLiveSpeakerTagsFromRecordingChunks(supabase, {
-        recordingId,
-        userId: user.id,
-        transcriptChunks: allChunks,
-      });
-      if (!syncResult.ok) {
-        console.warn("[TRANSCRIBE] Live speaker tags sync failed:", syncResult.message);
+      const hasMarkerTags = allChunks.some((chunk: any) => chunk?.speakerTag === true);
+      if (hasMarkerTags) {
+        const syncResult = await syncLiveSpeakerTagsFromRecordingChunks(supabase, {
+          recordingId,
+          userId: user.id,
+          transcriptChunks: allChunks,
+        });
+        if (!syncResult.ok) {
+          console.warn("[TRANSCRIBE] Live speaker tags sync failed:", syncResult.message);
+        }
       }
     }
 

@@ -12,6 +12,12 @@ export async function syncLiveSpeakerTagsFromRecordingChunks(
     recordingId: string;
     userId: string;
     transcriptChunks: unknown[] | null | undefined;
+    liveTags?: Array<{
+      timestampMs?: number;
+      endTimestampMs?: number | null;
+      speakerName?: string;
+      role?: string;
+    }> | null;
   }
 ): Promise<{ ok: true; inserted: number } | { ok: false; message: string }> {
   const { recordingId, userId } = params;
@@ -19,9 +25,38 @@ export async function syncLiveSpeakerTagsFromRecordingChunks(
     ? params.transcriptChunks
     : [];
 
-  const derived = deriveLiveSpeakerTagsFromChunks(
-    chunks as { text?: string; timestampMs?: number; speakerTag?: boolean }[]
-  );
+  const explicitTags = Array.isArray(params.liveTags)
+    ? params.liveTags
+        .map((tag) => {
+          const speakerName = String(tag?.speakerName || "").trim();
+          const role = tag?.role === "sermon" ? "sermon" : tag?.role === "sharing" ? "sharing" : null;
+          if (!speakerName || !role) return null;
+          const timestampMs = Math.max(0, Math.floor(Number(tag?.timestampMs) || 0));
+          const endTimestampMs =
+            tag?.endTimestampMs == null
+              ? null
+              : Math.max(timestampMs, Math.floor(Number(tag.endTimestampMs) || timestampMs));
+          return {
+            timestamp_ms: timestampMs,
+            end_timestamp_ms: endTimestampMs,
+            speaker_name: speakerName,
+            role,
+          };
+        })
+        .filter((tag): tag is {
+          timestamp_ms: number;
+          end_timestamp_ms: number | null;
+          speaker_name: string;
+          role: "sharing" | "sermon";
+        } => tag !== null)
+    : [];
+
+  const derived =
+    explicitTags.length > 0
+      ? explicitTags
+      : deriveLiveSpeakerTagsFromChunks(
+          chunks as { text?: string; timestampMs?: number; speakerTag?: boolean }[]
+        ).map((tag) => ({ ...tag, end_timestamp_ms: null as number | null }));
 
   const { error: deleteError } = await supabase
     .from("transcript_speaker_tags")
@@ -42,7 +77,7 @@ export async function syncLiveSpeakerTagsFromRecordingChunks(
     recording_id: recordingId,
     user_id: userId,
     timestamp_ms: d.timestamp_ms,
-    end_timestamp_ms: null as number | null,
+    end_timestamp_ms: d.end_timestamp_ms,
     speaker_name: d.speaker_name,
     role: d.role,
     note: null as string | null,
